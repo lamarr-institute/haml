@@ -1,7 +1,7 @@
 # Hyper-YAML (HAML)
 
 <p align="center">
-  <img src="path/to/logo.png" alt="haml logo" width="200"/>
+  <img src="logo.png" alt="haml logo" width="200"/>
 </p>
 
 HAML is an extension of YAML providing syntax to make parts of the file optional
