@@ -11,7 +11,17 @@ of ML experiments.
 
 ## Installation
 
+This package is currently not on PiPy and has to be installed directly from github:
+```bash
+pip install git+https://github.com/lamarr-institute/haml.git
+```
 
+Alternatively, you can clone this repository and install it from there:
+```bash
+git clone git@github.com:lamarr-institute/haml.git
+cd haml
+pip install .
+```
 
 ## Syntax
 
