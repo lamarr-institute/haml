@@ -25,8 +25,6 @@ pip install .
 
 ## Syntax
 
-### Choice List
-
 Inline choice lists:
 ```
 model:
@@ -79,4 +77,93 @@ Random Values:
 intensity: {{%normal(loc=10, scale=2)%}}
 saturation: {{%uniform(low=0, high=10)%}}
 num-scans: {{%integers(high=20)%}}
+```
+
+## Usage
+
+Write your HAML file using the syntax described above. The recommended file ending is `.haml`.
+The `haml` package provides methods for parsing such files into a `HAMLObject`, which allows to (1) generate all possible YAML files matching the HAML file, or (2) sample random YAML files.
+You can use the package both from the command line or within a Python script.
+
+### Command Line
+
+The `haml` package can be used from the command line using the following syntax:
+
+```
+usage: python -m haml [-h] [-d DIR] [-a] [-s NUM] [--seed SEED] [--rvlimit RVLIMIT]
+                      [--keep-empty-lines]
+                      file
+
+positional arguments:
+  file                  input HAML file
+
+options:
+  -h, --help            show this help message and exit
+  -d DIR, --directory DIR
+                        output directory for generated files
+  -a, --all             generate all possible files
+  -s NUM, --sample NUM  randomly sample files
+  --seed SEED           random seed for sampling
+  --rvlimit RVLIMIT     number of samples when running `all` on random variables with infinite
+                        support
+  --keep-empty-lines    do not remove empty lines from the output (this is done by default)
+```
+
+### Python Module
+
+The following example shows how to parse a HAML file and work with the resulting `HAMLObject`.
+
+Content of the YAML file:
+```yaml
+# A sample yaml file
+company: spacelift
+domain:
+{{2%
+ - devops
+||
+ - devsecops
+}}
+tutorial:
+{{2-2%
+  - yaml:
+      name: "YAML Ain't Markup Language"
+      type: awesome
+      born: 2001
+||
+  - json:
+      name: JavaScript Object Notation
+      type: great
+      born: 2001
+||
+  - xml:
+      name: Extensible Markup Language
+      type: good
+      born: 1996
+}}
+author: omkarbirade
+published: true
+```
+
+Python script:
+```python
+import haml
+import numpy as np
+
+# parse a HAML file
+h = haml.parse_file('foo.haml')
+
+rng = np.random.default_rng(2993644)
+for i in range(10):
+    # generate a random YAML string from HAML file
+    s = h.random(random_state=rng)
+    # write to YAML file
+    with open(f'foo_random_{i}.yaml', 'w') as f:
+        f.write(s)
+
+# generate all possible YAML files matching the HAML file
+# (this can be a large number, so check before jampacking your harddisk!)
+print(f'Generating {h.num_combinations()} files')
+for i, s in enumerate(h.all()):
+    with open(f'foo_all_{i}.yaml', 'w') as f:
+        f.write(s)
 ```
