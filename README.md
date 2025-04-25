@@ -25,7 +25,12 @@ pip install .
 
 ## Syntax
 
-Inline choice lists:
+### Choice Lists
+
+Choice lists are the most important and versatile syntax element of HAML files.
+They define blocks of text of which only one is selected for the resulting YAML file.
+
+#### Inline
 ```
 model:
   loss: cross-entropy
@@ -36,29 +41,43 @@ model:
   name: rutime
 ```
 
-Multi-line choice lists:
+#### Multi-Line
 ```
 channels: {{ ["E1-M2", "E2-M1"]
 || ["E1-M2", "E2-M1", "1-F", "1-2", "2-F"]
 || ["E1-M2", "E2-M1", "1-F", "1-2", "2-F", "Resp Rate", "Pulse Waveform", "Heart Rate"]
 }}
 ```
+By default, line breaks are preserved exactly as they occur in the HAML file, i.e., newline characters between the list item separators (`{{`, `||` and `}}`) are part of the items' content!
+When not used carefully, this can result in unexpected line breaks in the generated YAML files.
+The command line interface of HAML removes empty lines in the generated files by default.
 
-Weighted choice lists:
+
+#### Weighted Choice Lists
+
+An optional weight can be added after `{{` or `||`, separated from the main content by `%`. By default, each list item has weight 1.
+When sampling randomly from a HAML file, the probability of choosing each item is given by its weight divided by the sum of all items' weights.
+Consequently, assigning weight 2 to an item (e.g., through ``||2% ...`) doubles its probability to be sampled.
+The weights can be non-negative floats or integers.
+
 ```
 channels: {{2% ["E1-M2", "E2-M1"]
 ||3% ["E1-M2", "E2-M1", "1-F", "1-2", "2-F"]
 ||5% ["E1-M2", "E2-M1", "1-F", "1-2", "2-F", "Resp Rate", "Pulse Waveform", "Heart Rate"]}}
 ```
 
-Optional blocks:
+#### Optional Blocks
+
+The weighted choice list can be used to create optional content blocks by adding an empty item:
+
 ```
 {{
 option: debug
 ||}}
 ```
 
-Multiple choice lists:
+### Multiple Choice Lists
+
 ```
 {{1-2%
   key: foo
@@ -72,12 +91,18 @@ Multiple choice lists:
 }}
 ```
 
-Random Values:
+### Random Values
+
+HAML can insert random values through a special syntax:
 ```
 intensity: {{%normal(loc=10, scale=2)%}}
 saturation: {{%uniform(low=0, high=10)%}}
 num-scans: {{%integers(high=20)%}}
 ```
+
+In place of `normal` or `uniform`, every method provided by a NumPy `Generator` object can be invoked this way (e.g., `triangular`, `poisson`, `triangular`, etc.), with keyword arguments provided in parenthesis.
+Note that random functions called without arguments still require parentheses (e.g., `{{%normal()%}}`).
+
 
 ## Usage
 
