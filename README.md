@@ -106,7 +106,7 @@ Note that random functions called without arguments still require parentheses (e
 
 ## Usage
 
-Write your HAML file using the syntax described above. The recommended file ending is `.haml`.
+Write your HAML file using the syntax described above. The recommended file ending is `.hml`.
 The `haml` package provides methods for parsing such files into a `HAMLObject`, which allows to (1) generate all possible YAML files matching the HAML file, or (2) sample random YAML files.
 You can use the package both from the command line or within a Python script.
 
@@ -138,7 +138,7 @@ options:
 
 The following example shows how to parse a HAML file and work with the resulting `HAMLObject`.
 
-Content of the YAML file:
+Content of the HAML file `foo.hml`:
 ```yaml
 # A sample yaml file
 company: spacelift
@@ -175,7 +175,7 @@ import haml
 import numpy as np
 
 # parse a HAML file
-h = haml.parse_file('foo.haml')
+h = haml.parse_file('foo.hml')
 
 rng = np.random.default_rng(2993644)
 for i in range(10):
