@@ -16,4 +16,4 @@ dependencies = [
 readme = "README.md"
 
 [project.urls]
-Repository = "https://github.com/smuecke/haml.git"
+Repository = "https://github.com/lamarr-institute/haml.git"
