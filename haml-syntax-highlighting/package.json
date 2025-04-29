@@ -1,0 +1,32 @@
+{
+  "name": "haml-syntax-highlighting",
+  "displayName": "HAML Syntax Highlighting",
+  "description": "Syntax highlighting for *.hml files (HAML)",
+  "version": "0.0.1",
+  "publisher": "lamarr-institute",
+  "engines": { "vscode": "^1.75.0" },
+  "icon": "logo.png",
+  "repository": {
+    "url": "https://github.com/lamarr-institute/haml",
+    "type": "git"
+  },
+  "categories": ["Programming Languages"],
+
+  "contributes": {
+    "languages": [
+      {
+        "id": "haml-alt",
+        "aliases": ["HAML", "haml", "hml"],
+        "extensions": [".hml"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "haml-alt",
+        "scopeName": "source.haml-alt",
+        "path": "./syntaxes/haml.tmLanguage.json"
+      }
+    ]
+  }
+}
