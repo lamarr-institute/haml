@@ -7,7 +7,8 @@ name = "haml"
 version = "1.0"
 description = "Hyper-YAML!"
 authors = [
-  {name = "Sascha Mücke", email = "sascha.muecke@tu-dortmund.de"}
+  {name = "Sascha Mücke", email = "sascha.muecke@tu-dortmund.de"},
+  {name = "Sebastian Buschjäger", email = "sebastian.buschjaeger@tu-dortmund.de"}
 ]
 requires-python = ">= 3.8"
 dependencies = [

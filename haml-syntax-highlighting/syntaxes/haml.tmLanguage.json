@@ -1,0 +1,108 @@
+{
+  "scopeName": "source.haml-alt",
+  "name": "HAML",
+  "fileTypes": ["hml"],
+  "patterns": [
+    {
+      "name": "comment.line.number-sign.haml",
+      "match": "#.*$"
+    },
+
+    {
+      "name": "entity.name.tag.haml",
+      "match": "\\b[a-zA-Z_][a-zA-Z0-9_-]*\\b(?=\\s*:)"
+    },
+
+    {
+      "name": "punctuation.separator.key-value.haml",
+      "match": ":"
+    },
+
+    {
+      "name": "string.quoted.double.haml",
+      "begin": "\"",
+      "end": "\""
+    },
+
+    {
+      "name": "string.unquoted.haml",
+      "match": "\\b[a-zA-Z_][a-zA-Z0-9_-]*\\b"
+    },
+
+    {
+      "name": "constant.numeric.haml",
+      "match": "\\b\\d[\\d_]*(?:\\.\\d[\\d_]*)?(?:[eE][+-]?\\d[\\d_]*)?(?:ms|s)?\\b"
+    },
+
+    {
+      "name": "meta.choice.block.haml",
+      "begin": "\\{\\{",
+      "beginCaptures": { "0": { "name": "keyword.operator.choice.haml" } },
+      "end": "\\}\\}",
+      "endCaptures": { "0": { "name": "keyword.operator.choice.haml" } },
+      "applyEndPatternLast": true,
+      "patterns": [
+        {
+          "name": "comment.line.number-sign.haml",
+          "match": "#.*$"
+        },
+
+        {
+          "name": "keyword.operator.choice.haml",
+          "match": "\\b\\d+(-\\d+)?%"
+        },
+
+        {
+          "name": "entity.name.tag.haml",
+          "match": "\\b[a-zA-Z_][a-zA-Z0-9_-]*\\b(?=\\s*:)"
+        },
+        {
+          "name": "punctuation.separator.key-value.haml",
+          "match": ":"
+        },
+
+        {
+          "name": "meta.function.random.haml",
+          "begin": "[ \\t]*%([a-zA-Z_]+)\\(",
+          "beginCaptures": { "1": { "name": "keyword.operator.choice.haml" } },
+          "end": "\\)",
+          "patterns": [
+            {
+              "name": "variable.parameter.random.haml",
+              "match": "\\b[a-zA-Z_]+(?==)"
+            },
+            {
+              "name": "constant.numeric.random.haml",
+              "match": "\\b\\d[\\d_]*(?:\\.\\d[\\d_]*)?(?:[eE][+-]?\\d[\\d_]*)?(?:ms|s)?\\b"
+            }
+          ]
+        },
+
+        {
+          "name": "string.quoted.double.haml",
+          "begin": "\"",
+          "end": "\""
+        },
+
+        {
+          "name": "string.unquoted.haml",
+          "match": "\\b[a-zA-Z_][a-zA-Z0-9_-]*\\b"
+        },
+
+        {
+          "name": "constant.numeric.haml",
+          "match": "\\b\\d[\\d_]*(?:\\.\\d[\\d_]*)?(?:[eE][+-]?\\d[\\d_]*)?(?:ms|s)?\\b"
+        },
+
+        {
+          "name": "keyword.operator.choice.haml",
+          "match": "(?m)^[ \\t]*\\|\\|"
+        },
+        {
+          "name": "keyword.operator.choice.haml",
+          "match": "[ \\t]+\\|\\|"
+        }
+      ]
+    }
+  ]
+}

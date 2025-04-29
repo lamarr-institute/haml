@@ -1,0 +1,44 @@
+block1:
+    key: value  
+    key2: value2 
+    list1: ["ABC", "DEF"]
+    list2: [1, 2.0, 3e-5]
+    choices: {{ 1 || 2 || 3}}
+    choices2: {{ [1,2] || ["A","B"] }}
+
+block_choices: 
+{{
+    key1: value1
+    key2: value2
+||
+    key1: value3
+    key2: value4
+}}
+
+{{
+    maybe: debug
+||
+}}
+
+weighted_block_choices: 
+{{3-4%
+    key1: value1
+    key2: value2
+3% ||
+    key1: value3
+    key2: value4
+}}
+
+another_key: {{%normal(loc=10, scale=2)}}
+another_key: {{%integers(low=0, high=10)}}
+nested_stuff:
+    another_weighted_block_choices: 
+    {{3-4%
+        key1: value1
+        key2: value2
+    3% ||
+        key1: value3
+        key2: value4
+    }}
+    another_another_key: {{%normal(a=1,b=2)}}
+    another_another_key: {{%integers(a=1,b=2)}}
