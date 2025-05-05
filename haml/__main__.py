@@ -31,6 +31,8 @@ def main():
 
     rng = np.random.default_rng(args.seed)
     basename = os.path.basename(args.file).rsplit('.', 1)[0]
+
+    os.makedirs(args.directory, exist_ok=True)
     if args.all:
         if input(f'Proceed to create {obj.num_combinations()} files? [y/n] ').lower() != 'y':
             exit(0)
