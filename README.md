@@ -7,7 +7,9 @@
 HAML is an extension of YAML providing syntax to make parts of the file optional
 or generate values.
 This is particularly useful for generating YAML files defining the hyperparameters
-of ML experiments.
+of ML experiments. The repository also includes a simple runtime executor that can
+expand one `.hml` file into concrete YAML configs and launch each config in its own
+`tmux` session.
 
 ## Installation
 
@@ -108,9 +110,11 @@ Note that random functions called without arguments still require parentheses (e
 
 Write your HAML file using the syntax described above. The recommended file ending is `.hml`.
 The `haml` package provides methods for parsing such files into a `HAMLObject`, which allows to (1) generate all possible YAML files matching the HAML file, or (2) sample random YAML files.
-You can use the package both from the command line or within a Python script.
+You can use the package both from the command line or within a Python script. The
+command line also provides a lightweight runtime executor for launching generated
+configs through `tmux`.
 
-### Command Line
+### Command Line: Generate YAML
 
 The `haml` package can be used from the command line using the following syntax:
 
@@ -133,6 +137,71 @@ options:
                         support
   --keep-empty-lines    do not remove empty lines from the output (this is done by default)
 ```
+
+### Command Line: Execute YAML Runs
+
+The runtime executor expands a single `.hml` file into YAML configs, hashes each
+generated YAML file, stores it under a temp directory, and launches one `tmux`
+session per run.
+
+```
+usage: python -m haml run [-h] [-n NUM_SAMPLES]
+                          [--cuda-visible-devices [CUDA_VISIBLE_DEVICES ...]]
+                          [--temp-dir TEMP_DIR] [--skip] [--seed SEED]
+                          [--rvlimit RVLIMIT] [--keep-empty-lines]
+                          [--log-level {DEBUG,INFO,WARNING,ERROR}]
+                          file
+```
+
+Example:
+
+```bash
+python -m haml run experiments/train.hml \
+  --num-samples 8 \
+  --cuda-visible-devices 0 1 \
+  --temp-dir /tmp/haml-train \
+  --skip
+```
+
+The runtime uses these rules:
+
+- The generated YAML must contain a top-level `script` entry.
+- The generated YAML may contain a top-level `env` mapping.
+- The generated YAML may contain CLI parameters under `args`. `args` can be either:
+  a mapping like `{"lr": 0.001, "batch-size": 64, "use-ema": true}` or a list like
+  `["--lr", "0.001", "--batch-size", "64"]`.
+- The runtime computes `sha256(yaml_content)` and uses the resulting hex digest as the
+  run id.
+- Every launched script receives `--id <run_id>` in addition to the configured CLI args.
+- Generated configs are written to `<temp_dir>/<run_id>.yaml`. If `--temp-dir` is not
+  provided, HAML uses a folder below `tempfile.gettempdir()` such as `/tmp/haml-runs/<stem>`.
+- Each tmux-backed run also writes pane output to `<temp_dir>/logs/<run_id>.log`.
+- If `--skip` is enabled, existing `<run_id>.yaml` files are assumed to have been run
+  successfully already. They are neither rewritten nor relaunched.
+- If multiple CUDA devices are provided, the runtime schedules one active job per device.
+  If the flag is omitted, or passed without values, runs are launched sequentially with
+  `CUDA_VISIBLE_DEVICES` left unset.
+
+Example generated YAML:
+
+```yaml
+script: python train.py
+env:
+  WANDB_MODE: offline
+args:
+  config: configs/model-a.yaml
+  epochs: 100
+  use-ema: true
+```
+
+### Runtime Assumptions
+
+- Your script must accept an `--id` CLI argument.
+- Your script is responsible for storing checkpoints, metrics, and any other results locally.
+- The current backend is intentionally simple: `tmux` for process management and optional
+  `CUDA_VISIBLE_DEVICES` assignment for GPU selection.
+- Existing config files are treated as completed runs when `--skip` is used. There is no
+  separate result verification layer yet.
 
 ### Python Module
 
