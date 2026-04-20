@@ -147,7 +147,8 @@ session per run.
 ```
 usage: python -m haml run [-h] [-n NUM_SAMPLES]
                           [--cuda-visible-devices [CUDA_VISIBLE_DEVICES ...]]
-                          [--temp-dir TEMP_DIR] [--skip] [--seed SEED]
+                          [--temp-dir TEMP_DIR] [--skip] [--no-log-file]
+                          [--seed SEED]
                           [--rvlimit RVLIMIT] [--keep-empty-lines]
                           [--log-level {DEBUG,INFO,WARNING,ERROR}]
                           file
@@ -175,7 +176,10 @@ The runtime uses these rules:
 - Every launched script receives `--id <run_id>` in addition to the configured CLI args.
 - Generated configs are written to `<temp_dir>/<run_id>.yaml`. If `--temp-dir` is not
   provided, HAML uses a folder below `tempfile.gettempdir()` such as `/tmp/haml-runs/<stem>`.
-- Each tmux-backed run also writes pane output to `<temp_dir>/logs/<run_id>.log`.
+- Each tmux-backed run continues to print in the tmux pane and additionally mirrors both
+  stdout and stderr to `<temp_dir>/logs/<run_id>.log`.
+- `--no-log-file` disables the fallback tmux logfile redirection entirely.
+- Failed tmux panes remain open for inspection after the command exits.
 - If `--skip` is enabled, existing `<run_id>.yaml` files are assumed to have been run
   successfully already. They are neither rewritten nor relaunched.
 - If multiple CUDA devices are provided, the runtime schedules one active job per device.

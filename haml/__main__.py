@@ -61,6 +61,11 @@ def build_run_parser() -> ArgumentParser:
         action="store_true",
         help="skip configs already present on disk and do not relaunch them",
     )
+    parser.add_argument(
+        "--no-log-file",
+        action="store_true",
+        help="do not redirect tmux stdout/stderr into per-run log files",
+    )
     parser.add_argument("--seed", type=int, default=None, help="random seed for sampling")
     parser.add_argument(
         "--rvlimit",
@@ -121,6 +126,7 @@ def run_executor_mode(args) -> None:
         cuda_devices=args.cuda_visible_devices or [],
         temp_dir=args.temp_dir,
         skip_existing=args.skip,
+        enable_logging=not args.no_log_file,
         seed=args.seed,
         keep_empty_lines=args.keep_empty_lines,
     )

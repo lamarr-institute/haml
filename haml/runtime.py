@@ -113,12 +113,25 @@ def build_session_name(script_command: Sequence[str], run_id: str) -> str:
     return f"{safe_name}-{run_id[:12]}"
 
 
+def build_shell_command(
+    command: Sequence[str],
+    env: Dict[str, str],
+    log_path: Path,
+) -> str:
+    """Build a shell command that mirrors stdout/stderr to the pane and logfile."""
+    env_prefix = shlex.join(["env", *[f"{key}={value}" for key, value in env.items()]]) if env else "env"
+    command_str = shlex.join(command)
+    log_target = shlex.quote(str(log_path))
+    inner_command = f"set -o pipefail; {env_prefix} {command_str} 2>&1 | tee -a {log_target}; exit ${{PIPESTATUS[0]}}"
+    return shlex.join(["bash", "-lc", inner_command])
+
+
 @dataclass
 class RunSpec:
     """Concrete execution plan for one generated YAML config."""
     run_id: str
     config_path: Path
-    log_path: Path
+    log_path: Optional[Path]
     script_command: List[str]
     env: Dict[str, str]
     cli_args: List[str]
@@ -130,6 +143,7 @@ def generate_run_specs(
     num_samples: Optional[int],
     temp_dir: Optional[str],
     skip_existing: bool,
+    enable_logging: bool,
     seed: Optional[int] = None,
     keep_empty_lines: bool = False,
 ) -> Tuple[List[RunSpec], int, Path]:
@@ -139,7 +153,8 @@ def generate_run_specs(
     output_dir = Path(temp_dir) if temp_dir else default_temp_dir(haml_file)
     log_dir = output_dir / "logs"
     output_dir.mkdir(parents=True, exist_ok=True)
-    log_dir.mkdir(parents=True, exist_ok=True)
+    if enable_logging:
+        log_dir.mkdir(parents=True, exist_ok=True)
 
     def iter_contents() -> Iterator[str]:
         if num_samples is None:
@@ -172,7 +187,7 @@ def generate_run_specs(
             RunSpec(
                 run_id=run_id,
                 config_path=config_path,
-                log_path=log_dir / f"{run_id}.log",
+                log_path=(log_dir / f"{run_id}.log") if enable_logging else None,
                 script_command=script_command,
                 env=env,
                 cli_args=cli_args,
@@ -189,7 +204,8 @@ def launch_tmux_session(spec: RunSpec, cuda_device: Optional[str]) -> None:
     if shutil.which("tmux") is None:
         raise RuntimeError("tmux is required for execution but was not found in PATH")
 
-    spec.log_path.parent.mkdir(parents=True, exist_ok=True)
+    if spec.log_path is not None:
+        spec.log_path.parent.mkdir(parents=True, exist_ok=True)
     env = dict(spec.env)
     if cuda_device is not None:
         env["CUDA_VISIBLE_DEVICES"] = cuda_device
@@ -198,9 +214,11 @@ def launch_tmux_session(spec: RunSpec, cuda_device: Optional[str]) -> None:
     command.extend(["--id", spec.run_id])
     command.extend(spec.cli_args)
 
-    shell_command = shlex.join(["env", *[f"{key}={value}" for key, value in env.items()], *command])
-    pane_target = f"{spec.session_name}:0.0"
-    pipe_command = f"cat >> {shlex.quote(str(spec.log_path))}"
+    shell_command = (
+        build_shell_command(command=command, env=env, log_path=spec.log_path)
+        if spec.log_path is not None
+        else shlex.join(["env", *[f"{key}={value}" for key, value in env.items()], *command])
+    )
     subprocess.run(
         [
             "tmux",
@@ -209,34 +227,56 @@ def launch_tmux_session(spec: RunSpec, cuda_device: Optional[str]) -> None:
             "-s",
             spec.session_name,
             shell_command,
-            ";",
-            "pipe-pane",
-            "-O",
+        ],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "tmux",
+            "set-option",
+            "-w",
             "-t",
-            pane_target,
-            pipe_command,
+            f"{spec.session_name}:0",
+            "remain-on-exit",
+            "failed",
         ],
         check=True,
     )
 
     LOG.info(
-        "Launched %s on CUDA_VISIBLE_DEVICES=%s using %s (tmux log: %s)",
+        "Launched %s on CUDA_VISIBLE_DEVICES=%s using %s%s",
         spec.session_name,
         cuda_device if cuda_device is not None else "<unset>",
         spec.config_path,
-        spec.log_path,
+        f" (tmux log: {spec.log_path})" if spec.log_path is not None else "",
     )
 
 
 def tmux_session_alive(session_name: str) -> bool:
-    """Return whether a tmux session is still running."""
+    """Return whether the tmux session still has a live pane."""
     result = subprocess.run(
         ["tmux", "has-session", "-t", session_name],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         check=False,
     )
-    return result.returncode == 0
+    if result.returncode != 0:
+        return False
+
+    result = subprocess.run(
+        ["tmux", "list-panes", "-t", session_name, "-F", "#{pane_dead}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return False
+
+    pane_states = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if not pane_states:
+        return False
+    return any(state == "0" for state in pane_states)
 
 
 def execute_runs(
@@ -289,6 +329,7 @@ def run_file(
     cuda_devices: Optional[Sequence[str]] = None,
     temp_dir: Optional[str] = None,
     skip_existing: bool = False,
+    enable_logging: bool = True,
     seed: Optional[int] = None,
     keep_empty_lines: bool = False,
 ) -> Tuple[int, Path]:
@@ -298,6 +339,7 @@ def run_file(
         num_samples=num_samples,
         temp_dir=temp_dir,
         skip_existing=skip_existing,
+        enable_logging=enable_logging,
         seed=seed,
         keep_empty_lines=keep_empty_lines,
     )
