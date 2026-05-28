@@ -8,7 +8,7 @@ from operator  import methodcaller
 import numpy as np
 
 
-SPLIT_SYM = re.compile(r'{{|\|\||}}')
+SPLIT_SYM = re.compile(r'{{|\[\[|\|\||}}|\]\]')
 WEIGHTED = re.compile(r'\s*(\d*\.?\d+)%(.*)', flags=re.DOTALL)
 MULTIPLE = re.compile(r'\s*(\d+)-(\d+)%(.*)', flags=re.DOTALL)
 RANDVAR  = re.compile(r'%\s*([a-z]+)\((.*)\)%', flags=re.DOTALL)
@@ -49,6 +49,9 @@ class HAMLObject(ABC):
     @abstractmethod
     def all(self, return_path=False, random_state=None):
         return NotImplemented
+
+    def sample(self, return_path=False, random_state=None):
+        yield self.random(return_path, random_state)
     
     @abstractmethod
     def num_combinations(self):
@@ -89,6 +92,15 @@ class HAMLSequence(HAMLObject):
             else:
                 yield ''.join(strings)
 
+    def sample(self, return_path=False, random_state=None):
+        for strings in cart_prod(*[obj.sample(return_path, random_state) for obj in self.objects]):
+            if return_path:
+                strings, paths = zip(*strings)
+                path = '['+';'.join(p for p in paths if p)+']'
+                yield ''.join(strings), path
+            else:
+                yield ''.join(strings)
+
     def num_combinations(self):
         return prod([obj.num_combinations() for obj in self.objects])
 
@@ -114,9 +126,10 @@ class HAMLString(HAMLObject):
 
 
 class WeightedChoiceList(HAMLObject):
-    def __init__(self, items=None, weights=None):
+    def __init__(self, items=None, weights=None, exhaustive=False):
         self.items = items or []
         self.weights = [1]*len(self.items) if weights is None else weights
+        self.exhaustive = exhaustive
         assert len(self.items) == len(self.weights)
 
     def __repr__(self):
@@ -156,15 +169,40 @@ class WeightedChoiceList(HAMLObject):
                 else:
                     yield elem
 
+    def sample(self, return_path=False, random_state=None):
+        rng = np.random.default_rng(random_state)
+        if self.exhaustive:
+            for i, item in enumerate(self.items):
+                for elem in item.sample(return_path, rng):
+                    if return_path:
+                        elem, path = elem
+                        path = f'{i}>{path}' if path else f'{i}'
+                        yield elem, path
+                    else:
+                        yield elem
+            return
+
+        p = np.asarray(self.weights, dtype=np.float64)
+        p = p/p.sum()
+        i = rng.choice(len(self.items), p=p)
+        for elem in self.items[i].sample(return_path, rng):
+            if return_path:
+                elem, path = elem
+                path = f'{i}>{path}' if path else f'{i}'
+                yield elem, path
+            else:
+                yield elem
+
     def num_combinations(self):
         return sum(item.num_combinations() for item in self.items)
 
 
 class RandomSubsetList(HAMLObject):
-    def __init__(self, items=None, min=0, max=-1):
+    def __init__(self, items=None, min=0, max=-1, exhaustive=False):
         self.items = items or []
         self.min = min
         self.max = max
+        self.exhaustive = exhaustive
 
     def __repr__(self):
         return f'RSL({self.min}-{self.max})'+list(self.items).__repr__()
@@ -206,6 +244,35 @@ class RandomSubsetList(HAMLObject):
                         yield ''.join(strings), path
                     else:
                         yield ''.join(strings)
+
+    def sample(self, return_path=False, random_state=None):
+        rng = np.random.default_rng(random_state)
+        if self.exhaustive:
+            combos = (
+                combo
+                for size in range(self.min, self.max+1)
+                for combo in combinations(range(len(self.items)), r=size)
+            )
+        else:
+            combos = [tuple(sorted(rng.choice(
+                len(self.items),
+                size=rng.integers(self.min, self.max+1),
+                replace=False,
+            )))]
+
+        for combo in combos:
+            samples = [self.items[i].sample(return_path, rng) for i in combo]
+            for strings in cart_prod(*samples):
+                if return_path:
+                    if strings:
+                        strings, paths = zip(*strings)
+                        paths = [f'{i}>{p}' if p else f'{i}' for i,p in zip(combo, paths)]
+                        path = '{'+';'.join(paths)+'}'
+                        yield ''.join(strings), path
+                    else:
+                        yield '', '{}'
+                else:
+                    yield ''.join(strings)
 
     def num_combinations(self):
         res = 0
@@ -255,10 +322,20 @@ def parse(s: str) -> HAMLObject:
 
     items = []
     current_item = []
+    exhaustive = False
+    open_symbols = []
     for sym, after in zip(SPLIT_SYM.findall(s), sections):
-        if sym == '{{':
+        if sym in ('{{', '[['):
+            if level == 0:
+                exhaustive = sym == '[['
+            open_symbols.append(sym)
             level += 1
-        elif sym == '}}':
+        elif sym in ('}}', ']]'):
+            if not open_symbols:
+                raise Exception('Parse Error: Misplaced closing delimiter')
+            opener = open_symbols.pop()
+            if (opener, sym) not in (('{{', '}}'), ('[[', ']]')):
+                raise Exception('Parse Error: Mismatched choice delimiters')
             level -= 1
         
         if level > 0:
@@ -288,14 +365,14 @@ def parse(s: str) -> HAMLObject:
             elif match := MULTIPLE.match(items[0]):
                 # Random Subset List
                 min_, max_, item_ = match.groups()
-                obj = RandomSubsetList(min=int(min_), max=int(max_))
+                obj = RandomSubsetList(min=int(min_), max=int(max_), exhaustive=exhaustive)
                 obj.add_item(parse(item_))
                 for item in items[1:]:
                     obj.add_item(parse(item))
                 
             else:
                 # Weighted Choice List
-                obj = WeightedChoiceList()
+                obj = WeightedChoiceList(exhaustive=exhaustive)
                 for item in items:
                     if match := WEIGHTED.match(item):
                         groups = match.groups()
@@ -307,6 +384,7 @@ def parse(s: str) -> HAMLObject:
             result.append(obj)
             result.append(HAMLString(after))
             items.clear()
+            exhaustive = False
 
         else:
             raise Exception('Parse Error: Misplaced }}')

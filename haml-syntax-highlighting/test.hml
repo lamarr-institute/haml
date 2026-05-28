@@ -4,6 +4,7 @@ block1:
     list1: ["ABC", "DEF"]
     list2: [1, 2.0, 3e-5]
     choices: {{ 1 || 2 || 3}}
+    exhaustive_choices: [[ adam || sgd || rmsprop ]]
     choices2: {{ [1,2] || ["A","B"] }}
 
 block_choices: 

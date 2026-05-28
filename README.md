@@ -78,6 +78,21 @@ option: debug
 ||}}
 ```
 
+#### Exhaustive Sample Choice Lists
+
+Use `[[ ... || ... ]]` when a choice list should be expanded exhaustively even during random sampling:
+
+```yaml
+optimizer: [[ adam || sgd || rmsprop ]]
+lr: {{ 0.001 || 0.0003 || 0.0001 }}
+batch_size: {{ 32 || 64 }}
+```
+
+With `-s 20`, HAML samples the regular `{{ ... }}` choices 20 times and combines
+each random sample with every `optimizer` value, producing `20 * 3` YAML files.
+Multiple `[[]]` lists are combined as a Cartesian product. When using `--all`,
+`{{}}` and `[[]]` are both expanded exhaustively.
+
 ### Multiple Choice Lists
 
 ```
@@ -131,7 +146,7 @@ options:
   -d DIR, --directory DIR
                         output directory for generated files
   -a, --all             generate all possible files
-  -s NUM, --sample NUM  randomly sample files
+  -s NUM, --sample NUM  randomly sample files; `[[]]` lists multiply the output
   --seed SEED           random seed for sampling
   --rvlimit RVLIMIT     number of samples when running `all` on random variables with infinite
                         support
@@ -167,6 +182,8 @@ python -m haml run experiments/train.hml \
 The runtime uses these rules:
 
 - The generated YAML must contain a top-level `script` entry.
+- If sampled configs contain `[[]]` lists, each random sample is combined with
+  every exhaustive choice from those lists.
 - The generated YAML may contain a top-level `env` mapping.
 - The generated YAML may contain CLI parameters under `args`. `args` can be either:
   a mapping like `{"lr": 0.001, "batch-size": 64, "use-ema": true}` or a list like

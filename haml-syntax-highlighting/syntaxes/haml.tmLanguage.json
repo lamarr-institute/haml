@@ -36,9 +36,9 @@
 
     {
       "name": "meta.choice.block.haml",
-      "begin": "\\{\\{",
+      "begin": "\\{\\{|\\[\\[",
       "beginCaptures": { "0": { "name": "keyword.operator.choice.haml" } },
-      "end": "\\}\\}",
+      "end": "\\}\\}|\\]\\]",
       "endCaptures": { "0": { "name": "keyword.operator.choice.haml" } },
       "applyEndPatternLast": true,
       "patterns": [

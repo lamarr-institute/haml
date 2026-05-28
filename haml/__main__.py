@@ -43,7 +43,7 @@ def build_run_parser() -> ArgumentParser:
         "--num-samples",
         type=int,
         default=None,
-        help="number of sampled configs to generate; defaults to generating all combinations",
+        help="number of sampled configs to generate",
     )
     parser.add_argument(
         "--cuda-visible-devices",
@@ -103,10 +103,12 @@ def run_generate_mode(args) -> None:
                 handle.write(s if args.keep_empty_lines else remove_empty_lines(s))
 
     elif args.sample > 0:
-        for i in range(args.sample):
-            with open(os.path.join(args.directory, f"{basename}_{i}.yml"), "w", encoding="utf-8") as handle:
-                content = obj.random(random_state=rng)
-                handle.write(content if args.keep_empty_lines else remove_empty_lines(content))
+        i = 0
+        for _ in range(args.sample):
+            for content in obj.sample(random_state=rng):
+                with open(os.path.join(args.directory, f"{basename}_{i}.yml"), "w", encoding="utf-8") as handle:
+                    handle.write(content if args.keep_empty_lines else remove_empty_lines(content))
+                i += 1
 
 
 def run_executor_mode(args) -> None:

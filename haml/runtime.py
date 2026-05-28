@@ -161,7 +161,7 @@ def generate_run_specs(
             yield from haml_object.all(random_state=rng)
             return
         for _ in range(num_samples):
-            yield haml_object.random(random_state=rng)
+            yield from haml_object.sample(random_state=rng)
 
     generated = 0
     seen_run_ids = set()
