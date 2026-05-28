@@ -282,15 +282,20 @@ def tmux_session_alive(session_name: str) -> bool:
 def execute_runs(
     specs: Sequence[RunSpec],
     cuda_devices: Sequence[str],
+    cpu_workers: int = 1,
     poll_interval_seconds: float = 2.0,
 ) -> None:
     """Execute run specs on a fixed pool of CUDA or CPU slots."""
+    if cpu_workers < 1:
+        raise ValueError("cpu_workers must be >= 1")
+    if cuda_devices and cpu_workers != 1:
+        raise ValueError("cpu_workers cannot be set together with cuda_devices")
     if not specs:
         LOG.info("No runs to execute.")
         return
 
     pending: Deque[RunSpec] = deque(specs)
-    slot_devices: List[Optional[str]] = list(cuda_devices) if cuda_devices else [None]
+    slot_devices: List[Optional[str]] = list(cuda_devices) if cuda_devices else [None] * cpu_workers
     slot_ids = list(range(len(slot_devices)))
     active: Dict[int, RunSpec] = {}
     completed = 0
@@ -327,6 +332,7 @@ def run_file(
     haml_file: str,
     num_samples: Optional[int] = None,
     cuda_devices: Optional[Sequence[str]] = None,
+    cpu_workers: Optional[int] = None,
     temp_dir: Optional[str] = None,
     skip_existing: bool = False,
     enable_logging: bool = True,
@@ -334,6 +340,11 @@ def run_file(
     keep_empty_lines: bool = False,
 ) -> Tuple[int, Path]:
     """Generate, persist, and execute runs derived from one HAML file."""
+    if cpu_workers is not None and cpu_workers < 1:
+        raise ValueError("cpu_workers must be >= 1")
+    if cuda_devices and cpu_workers is not None:
+        raise ValueError("cpu_workers cannot be set together with cuda_devices")
+
     specs, generated, output_dir = generate_run_specs(
         haml_file=haml_file,
         num_samples=num_samples,
@@ -343,5 +354,5 @@ def run_file(
         seed=seed,
         keep_empty_lines=keep_empty_lines,
     )
-    execute_runs(specs, cuda_devices or [])
+    execute_runs(specs, cuda_devices or [], cpu_workers=cpu_workers or 1)
     return generated, output_dir

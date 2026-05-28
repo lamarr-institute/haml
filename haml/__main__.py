@@ -52,6 +52,12 @@ def build_run_parser() -> ArgumentParser:
         help="CUDA device ids to schedule onto; omit the flag or pass it without values to leave CUDA_VISIBLE_DEVICES unset",
     )
     parser.add_argument(
+        "--cpu-workers",
+        type=int,
+        default=None,
+        help="number of CPU-only runs to execute in parallel when CUDA devices are not set",
+    )
+    parser.add_argument(
         "--temp-dir",
         default=None,
         help="directory for generated configs; defaults to a folder below tempfile.gettempdir()",
@@ -126,6 +132,7 @@ def run_executor_mode(args) -> None:
         haml_file=args.file,
         num_samples=args.num_samples,
         cuda_devices=args.cuda_visible_devices or [],
+        cpu_workers=args.cpu_workers,
         temp_dir=args.temp_dir,
         skip_existing=args.skip,
         enable_logging=not args.no_log_file,

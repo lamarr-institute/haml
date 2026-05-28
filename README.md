@@ -162,8 +162,8 @@ session per run.
 ```
 usage: python -m haml run [-h] [-n NUM_SAMPLES]
                           [--cuda-visible-devices [CUDA_VISIBLE_DEVICES ...]]
-                          [--temp-dir TEMP_DIR] [--skip] [--no-log-file]
-                          [--seed SEED]
+                          [--cpu-workers CPU_WORKERS] [--temp-dir TEMP_DIR]
+                          [--skip] [--no-log-file] [--seed SEED]
                           [--rvlimit RVLIMIT] [--keep-empty-lines]
                           [--log-level {DEBUG,INFO,WARNING,ERROR}]
                           file
@@ -175,6 +175,16 @@ Example:
 python -m haml run experiments/train.hml \
   --num-samples 8 \
   --cuda-visible-devices 0 1 \
+  --temp-dir /tmp/haml-train \
+  --skip
+```
+
+CPU-only parallel example:
+
+```bash
+python -m haml run experiments/train.hml \
+  --num-samples 8 \
+  --cpu-workers 4 \
   --temp-dir /tmp/haml-train \
   --skip
 ```
@@ -200,8 +210,10 @@ The runtime uses these rules:
 - If `--skip` is enabled, existing `<run_id>.yaml` files are assumed to have been run
   successfully already. They are neither rewritten nor relaunched.
 - If multiple CUDA devices are provided, the runtime schedules one active job per device.
-  If the flag is omitted, or passed without values, runs are launched sequentially with
-  `CUDA_VISIBLE_DEVICES` left unset.
+  `--cpu-workers` cannot be set together with `--cuda-visible-devices`.
+- If CUDA devices are omitted, `--cpu-workers` controls how many CPU-only jobs are
+  launched in parallel. If `--cpu-workers` is omitted, runs are launched sequentially.
+  In CPU mode, `CUDA_VISIBLE_DEVICES` is left unset.
 
 Example generated YAML:
 
