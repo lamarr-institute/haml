@@ -8,7 +8,7 @@ import numpy as np
 
 from . import parse_file
 from .haml import RANDOM_VALUE_LIMIT
-from .runtime import run_file
+from .runtime import load_runtime_config, run_file
 
 
 def remove_empty_lines(s: str):
@@ -39,52 +39,10 @@ def build_run_parser() -> ArgumentParser:
     parser = ArgumentParser(prog="python -m haml run")
     parser.add_argument("file", help="input HAML file")
     parser.add_argument(
-        "-n",
-        "--num-samples",
-        type=int,
-        default=None,
-        help="number of sampled configs to generate",
-    )
-    parser.add_argument(
-        "--cuda-visible-devices",
-        nargs="*",
-        default=None,
-        help="CUDA device ids to schedule onto; omit the flag or pass it without values to leave CUDA_VISIBLE_DEVICES unset",
-    )
-    parser.add_argument(
-        "--cpu-workers",
-        type=int,
-        default=None,
-        help="number of CPU-only runs to execute in parallel when CUDA devices are not set",
-    )
-    parser.add_argument(
-        "--temp-dir",
-        default=None,
-        help="directory for generated configs; defaults to a folder below tempfile.gettempdir()",
-    )
-    parser.add_argument(
-        "--skip",
-        action="store_true",
-        help="skip configs already present on disk and do not relaunch them",
-    )
-    parser.add_argument(
-        "--no-log-file",
-        action="store_true",
-        help="do not redirect tmux stdout/stderr into per-run log files",
-    )
-    parser.add_argument("--seed", type=int, default=None, help="random seed for sampling")
-    parser.add_argument(
-        "--rvlimit",
-        type=int,
-        default=RANDOM_VALUE_LIMIT,
-        help="number of samples when expanding random variables with infinite support",
-    )
-    parser.add_argument("--keep-empty-lines", action="store_true")
-    parser.add_argument(
-        "--log-level",
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="logging verbosity",
+        "-r",
+        "--runtime-config",
+        required=True,
+        help="YAML file containing runtime-only execution settings such as script and CUDA devices",
     )
     return parser
 
@@ -119,25 +77,20 @@ def run_generate_mode(args) -> None:
 
 def run_executor_mode(args) -> None:
     """Handle the tmux-based runtime execution mode."""
+    runtime_config = load_runtime_config(args.runtime_config)
     logging.basicConfig(
-        level=getattr(logging, args.log_level),
+        level=getattr(logging, runtime_config.log_level),
         format="%(asctime)s %(levelname)s %(message)s",
     )
 
     import haml.haml as haml_module
 
-    haml_module.RANDOM_VALUE_LIMIT = args.rvlimit
+    if runtime_config.rvlimit is not None:
+        haml_module.RANDOM_VALUE_LIMIT = runtime_config.rvlimit
 
     generated, output_dir = run_file(
         haml_file=args.file,
-        num_samples=args.num_samples,
-        cuda_devices=args.cuda_visible_devices or [],
-        cpu_workers=args.cpu_workers,
-        temp_dir=args.temp_dir,
-        skip_existing=args.skip,
-        enable_logging=not args.no_log_file,
-        seed=args.seed,
-        keep_empty_lines=args.keep_empty_lines,
+        runtime_config_path=args.runtime_config,
     )
     logging.info("Prepared %d configs in %s", generated, output_dir)
 

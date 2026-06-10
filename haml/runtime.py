@@ -82,8 +82,8 @@ def parse_env(raw_env) -> Dict[str, str]:
     return {str(key): str(value) for key, value in raw_env.items()}
 
 
-def read_pass_config(data: dict, config_path: Path) -> bool:
-    """Read pass-config using either supported YAML key spelling."""
+def read_optional_pass_config(data: dict, config_path: Path) -> Optional[bool]:
+    """Read pass-config using either supported YAML key spelling, if present."""
     dashed = data.get("pass-config")
     underscored = data.get("pass_config")
 
@@ -91,28 +91,17 @@ def read_pass_config(data: dict, config_path: Path) -> bool:
         raise ValueError(f"{config_path} contains conflicting `pass-config` and `pass_config` values")
 
     value = underscored if underscored is not None else dashed
-    return bool(value) if value is not None else False
+    return bool(value) if value is not None else None
 
 
-def load_run_config(config_path: Path) -> Tuple[List[str], Dict[str, str], List[str], bool]:
-    """Load one generated YAML config and extract execution settings."""
+def read_mapping_file(config_path: Path) -> dict:
+    """Load a YAML file and require a top-level mapping."""
     with config_path.open("r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle)
 
     if not isinstance(data, dict):
         raise ValueError(f"{config_path} must contain a top-level mapping")
-
-    if "script" not in data:
-        raise ValueError(f"{config_path} is missing required key `script`")
-
-    raw_args = data.get("args", data.get("cli_args", data.get("cli")))
-    
-    return (
-        parse_script_command(data["script"]),
-        parse_env(data.get("env")),
-        build_cli_args(raw_args),
-        read_pass_config(data, config_path),
-    )
+    return data
 
 
 def compute_run_id(content: str) -> str:
@@ -153,12 +142,83 @@ class RunSpec:
     session_name: str
 
 
+@dataclass
+class RuntimeConfig:
+    """Runtime-only settings used to launch generated configs."""
+    script_command: List[str]
+    env: Dict[str, str]
+    cli_args: List[str]
+    pass_config: bool
+    num_samples: Optional[int] = None
+    seed: Optional[int] = None
+    rvlimit: Optional[int] = None
+    keep_empty_lines: bool = False
+    cuda_devices: Optional[List[str]] = None
+    cpu_workers: Optional[int] = None
+    temp_dir: Optional[str] = None
+    skip_existing: Optional[bool] = None
+    enable_logging: Optional[bool] = None
+    log_level: str = "INFO"
+
+
+def parse_cuda_devices(raw_devices, config_path: Path) -> Optional[List[str]]:
+    """Normalize CUDA device config into a list of strings."""
+    if raw_devices is None:
+        return None
+    if isinstance(raw_devices, list):
+        return [str(device) for device in raw_devices]
+    raise TypeError(f"`cuda_visible_devices` in {config_path} must be a list")
+
+
+def load_runtime_config(runtime_config_path: str) -> RuntimeConfig:
+    """Load runtime-only settings from a YAML file."""
+    config_path = Path(runtime_config_path)
+    data = read_mapping_file(config_path)
+    if "runtime" in data:
+        runtime_data = data["runtime"]
+        if not isinstance(runtime_data, dict):
+            raise TypeError(f"`runtime` in {config_path} must be a mapping")
+        data = runtime_data
+
+    raw_args = data.get("args", data.get("cli_args", data.get("cli")))
+    no_log_file = data.get("no_log_file", data.get("no-log-file"))
+    enable_logging = data.get("enable_logging", data.get("enable-log-file"))
+    if no_log_file is not None and enable_logging is not None:
+        raise ValueError(f"{config_path} contains both `no_log_file` and `enable_logging`")
+    if "script" not in data:
+        raise ValueError(f"{config_path} is missing required key `script`")
+    pass_config = read_optional_pass_config(data, config_path)
+    log_level = str(data.get("log_level", "INFO")).upper()
+    if log_level not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
+        raise ValueError(f"`log_level` in {config_path} must be one of DEBUG, INFO, WARNING, ERROR")
+
+    return RuntimeConfig(
+        script_command=parse_script_command(data["script"]),
+        env=parse_env(data.get("env")),
+        cli_args=build_cli_args(raw_args),
+        pass_config=pass_config if pass_config is not None else True,
+        num_samples=int(data["num_samples"]) if data.get("num_samples") is not None else None,
+        seed=int(data["seed"]) if data.get("seed") is not None else None,
+        rvlimit=int(data["rvlimit"]) if data.get("rvlimit") is not None else None,
+        keep_empty_lines=bool(data.get("keep_empty_lines", False)),
+        cuda_devices=parse_cuda_devices(data.get("cuda_visible_devices"), config_path),
+        cpu_workers=int(data["cpu_workers"]) if data.get("cpu_workers") is not None else None,
+        temp_dir=str(data["temp_dir"]) if data.get("temp_dir") is not None else None,
+        skip_existing=bool(data["skip"]) if data.get("skip") is not None else None,
+        enable_logging=(not bool(no_log_file)) if no_log_file is not None else (
+            bool(enable_logging) if enable_logging is not None else None
+        ),
+        log_level=log_level,
+    )
+
+
 def generate_run_specs(
     haml_file: str,
     num_samples: Optional[int],
     temp_dir: Optional[str],
     skip_existing: bool,
     enable_logging: bool,
+    runtime_config: RuntimeConfig,
     seed: Optional[int] = None,
     keep_empty_lines: bool = False,
 ) -> Tuple[List[RunSpec], int, Path]:
@@ -197,17 +257,16 @@ def generate_run_specs(
             continue
 
         config_path.write_text(content, encoding="utf-8")
-        script_command, env, cli_args, pass_config = load_run_config(config_path)
         specs.append(
             RunSpec(
                 run_id=run_id,
                 config_path=config_path,
                 log_path=(log_dir / f"{run_id}.log") if enable_logging else None,
-                script_command=script_command,
-                env=env,
-                cli_args=cli_args,
-                pass_config=pass_config,
-                session_name=build_session_name(script_command, run_id),
+                script_command=runtime_config.script_command,
+                env=runtime_config.env,
+                cli_args=runtime_config.cli_args,
+                pass_config=runtime_config.pass_config,
+                session_name=build_session_name(runtime_config.script_command, run_id),
             )
         )
         generated += 1
@@ -353,12 +412,41 @@ def run_file(
     cuda_devices: Optional[Sequence[str]] = None,
     cpu_workers: Optional[int] = None,
     temp_dir: Optional[str] = None,
-    skip_existing: bool = False,
-    enable_logging: bool = True,
+    runtime_config_path: Optional[str] = None,
+    skip_existing: Optional[bool] = None,
+    enable_logging: Optional[bool] = None,
     seed: Optional[int] = None,
-    keep_empty_lines: bool = False,
+    keep_empty_lines: Optional[bool] = None,
 ) -> Tuple[int, Path]:
     """Generate, persist, and execute runs derived from one HAML file."""
+    if runtime_config_path is None:
+        raise ValueError("runtime_config_path is required")
+    runtime_config = load_runtime_config(runtime_config_path)
+    if runtime_config.rvlimit is not None:
+        import haml.haml as haml_module
+
+        haml_module.RANDOM_VALUE_LIMIT = runtime_config.rvlimit
+    if num_samples is None:
+        num_samples = runtime_config.num_samples
+    if cuda_devices is None and cpu_workers is None:
+        cuda_devices = runtime_config.cuda_devices
+    if cpu_workers is None and not cuda_devices:
+        cpu_workers = runtime_config.cpu_workers
+    if temp_dir is None:
+        temp_dir = runtime_config.temp_dir
+    if skip_existing is None:
+        skip_existing = runtime_config.skip_existing
+    if skip_existing is None:
+        skip_existing = False
+    if enable_logging is None:
+        enable_logging = runtime_config.enable_logging
+    if enable_logging is None:
+        enable_logging = True
+    if seed is None:
+        seed = runtime_config.seed
+    if keep_empty_lines is None:
+        keep_empty_lines = runtime_config.keep_empty_lines
+
     if cpu_workers is not None and cpu_workers < 1:
         raise ValueError("cpu_workers must be >= 1")
     if cuda_devices and cpu_workers is not None:
@@ -370,6 +458,7 @@ def run_file(
         temp_dir=temp_dir,
         skip_existing=skip_existing,
         enable_logging=enable_logging,
+        runtime_config=runtime_config,
         seed=seed,
         keep_empty_lines=keep_empty_lines,
     )

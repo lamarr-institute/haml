@@ -160,74 +160,106 @@ generated YAML file, stores it under a temp directory, and launches one `tmux`
 session per run.
 
 ```
-usage: python -m haml run [-h] [-n NUM_SAMPLES]
-                          [--cuda-visible-devices [CUDA_VISIBLE_DEVICES ...]]
-                          [--cpu-workers CPU_WORKERS] [--temp-dir TEMP_DIR]
-                          [--skip] [--no-log-file] [--seed SEED]
-                          [--rvlimit RVLIMIT] [--keep-empty-lines]
-                          [--log-level {DEBUG,INFO,WARNING,ERROR}]
-                          file
+usage: python -m haml run [-h] -r RUNTIME_CONFIG file
 ```
 
 Example:
 
 ```bash
 python -m haml run experiments/train.hml \
-  --num-samples 8 \
-  --cuda-visible-devices 0 1 \
-  --temp-dir /tmp/haml-train \
-  --skip
+  --runtime-config experiments/runtime.yml
 ```
 
 CPU-only parallel example:
 
 ```bash
-python -m haml run experiments/train.hml \
-  --num-samples 8 \
-  --cpu-workers 4 \
-  --temp-dir /tmp/haml-train \
-  --skip
+python -m haml run experiments/train.hml --runtime-config experiments/runtime-cpu.yml
 ```
 
 The runtime uses these rules:
 
-- The generated YAML must contain a top-level `script` entry.
+- The HAML file contains only the script config. Runtime settings live in a separate
+  runtime YAML file passed with `--runtime-config`.
 - If sampled configs contain `[[]]` lists, each random sample is combined with
   every exhaustive choice from those lists.
-- The generated YAML may contain a top-level `env` mapping.
-- The generated YAML may contain CLI parameters under `args`. `args` can be either:
-  a mapping like `{"lr": 0.001, "batch-size": 64, "use-ema": true}` or a list like
-  `["--lr", "0.001", "--batch-size", "64"]`.
-- If the generated YAML contains `pass-config: true` or `pass_config: true`, HAML passes the generated YAML
-  path to the script as `--config <temp_dir>/<run_id>.yaml --id <run_id>` instead of
-  flattening `args` into CLI parameters.
 - The runtime computes `sha256(yaml_content)` and uses the resulting hex digest as the
   run id.
-- Every launched script receives `--id <run_id>` in addition to the configured CLI args.
-- Generated configs are written to `<temp_dir>/<run_id>.yaml`. If `--temp-dir` is not
+- Every launched script receives `--id <run_id>`.
+- Generated configs are written to `<temp_dir>/<run_id>.yaml`. If `temp_dir` is not
   provided, HAML uses a folder below `tempfile.gettempdir()` such as `/tmp/haml-runs/<stem>`.
 - Each tmux-backed run continues to print in the tmux pane and additionally mirrors both
   stdout and stderr to `<temp_dir>/logs/<run_id>.log`.
-- `--no-log-file` disables the fallback tmux logfile redirection entirely.
+- `enable_logging: false` disables the fallback tmux logfile redirection entirely.
 - Failed tmux panes remain open for inspection after the command exits.
-- If `--skip` is enabled, existing `<run_id>.yaml` files are assumed to have been run
+- If `skip` is enabled, existing `<run_id>.yaml` files are assumed to have been run
   successfully already. They are neither rewritten nor relaunched.
 - If multiple CUDA devices are provided, the runtime schedules one active job per device.
-  `--cpu-workers` cannot be set together with `--cuda-visible-devices`.
-- If CUDA devices are omitted, `--cpu-workers` controls how many CPU-only jobs are
-  launched in parallel. If `--cpu-workers` is omitted, runs are launched sequentially.
+  `cpu_workers` cannot be set together with `cuda_visible_devices`.
+- If CUDA devices are omitted, `cpu_workers` controls how many CPU-only jobs are
+  launched in parallel. If `cpu_workers` is omitted, runs are launched sequentially.
   In CPU mode, `CUDA_VISIBLE_DEVICES` is left unset.
+
+Runtime config entries:
+
+- `script` is required. It is the command to launch, either as a shell-style string
+  such as `python train.py` or as a list such as `[python, train.py]`.
+- `pass_config` defaults to `true`. When enabled, HAML passes
+  `--config <temp_dir>/<run_id>.yaml --id <run_id>` to the script.
+- `args` is optional and is only used when `pass_config: false`. It can be a mapping
+  like `{lr: 0.001, batch-size: 64, use-ema: true}` or a list like
+  `[--lr, "0.001", --batch-size, "64"]`.
+- `env` is an optional mapping of environment variables for each launched process.
+- `num_samples` optionally controls how many random HAML samples are generated. If
+  omitted, all combinations are generated.
+- `seed` optionally sets the random seed for HAML sampling.
+- `rvlimit` optionally sets the expansion limit for random variables with infinite
+  support when generating all combinations.
+- `keep_empty_lines` defaults to `false`. Set it to `true` to keep blank lines in
+  generated YAML configs.
+- `temp_dir` optionally sets where generated configs and logs are written.
+- `skip` defaults to `false`. Set it to `true` to skip generated config files that
+  already exist on disk.
+- `enable_logging` defaults to `true`. Set it to `false` to disable per-run tmux log
+  files. `no_log_file: true` is accepted as the inverse spelling.
+- `log_level` defaults to `INFO`. Supported values are `DEBUG`, `INFO`, `WARNING`,
+  and `ERROR`.
+- `cuda_visible_devices` is an optional list. HAML schedules one active run per
+  listed value and sets `CUDA_VISIBLE_DEVICES` for that run.
+- `cpu_workers` optionally sets the number of CPU-only runs to execute in parallel.
+  It cannot be combined with `cuda_visible_devices`.
 
 Example generated YAML:
 
 ```yaml
+model: model-a
+epochs: 100
+use_ema: true
+lr: 0.001
+```
+
+Example runtime YAML:
+
+```yaml
 script: python train.py
+num_samples: 8
 env:
   WANDB_MODE: offline
-args:
-  config: configs/model-a.yaml
-  epochs: 100
-  use-ema: true
+cuda_visible_devices:
+  - 0
+  - 1
+temp_dir: /tmp/haml-train
+skip: true
+log_level: INFO
+```
+
+CPU-only runtime YAML:
+
+```yaml
+script: python train.py
+num_samples: 8
+cpu_workers: 4
+temp_dir: /tmp/haml-train
+skip: true
 ```
 
 ### Runtime Assumptions
@@ -236,7 +268,7 @@ args:
 - Your script is responsible for storing checkpoints, metrics, and any other results locally.
 - The current backend is intentionally simple: `tmux` for process management and optional
   `CUDA_VISIBLE_DEVICES` assignment for GPU selection.
-- Existing config files are treated as completed runs when `--skip` is used. There is no
+- Existing config files are treated as completed runs when `skip` is used. There is no
   separate result verification layer yet.
 
 ### Python Module
