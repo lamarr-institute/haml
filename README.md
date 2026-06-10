@@ -198,6 +198,9 @@ The runtime uses these rules:
 - The generated YAML may contain CLI parameters under `args`. `args` can be either:
   a mapping like `{"lr": 0.001, "batch-size": 64, "use-ema": true}` or a list like
   `["--lr", "0.001", "--batch-size", "64"]`.
+- If the generated YAML contains `pass-config: true`, HAML passes the generated YAML
+  path to the script as `--config <temp_dir>/<run_id>.yaml --id <run_id>` instead of
+  flattening `args` into CLI parameters.
 - The runtime computes `sha256(yaml_content)` and uses the resulting hex digest as the
   run id.
 - Every launched script receives `--id <run_id>` in addition to the configured CLI args.

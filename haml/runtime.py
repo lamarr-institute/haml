@@ -81,8 +81,7 @@ def parse_env(raw_env) -> Dict[str, str]:
         raise TypeError("`env` must be a mapping")
     return {str(key): str(value) for key, value in raw_env.items()}
 
-
-def load_run_config(config_path: Path) -> Tuple[List[str], Dict[str, str], List[str]]:
+def load_run_config(config_path: Path) -> Tuple[List[str], Dict[str, str], List[str], bool]:
     """Load one generated YAML config and extract execution settings."""
     with config_path.open("r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle)
@@ -94,10 +93,12 @@ def load_run_config(config_path: Path) -> Tuple[List[str], Dict[str, str], List[
         raise ValueError(f"{config_path} is missing required key `script`")
 
     raw_args = data.get("args", data.get("cli_args", data.get("cli")))
+    
     return (
         parse_script_command(data["script"]),
         parse_env(data.get("env")),
         build_cli_args(raw_args),
+        data.get("pass-config", False) if data.get("pass-config", False) is not None else False 
     )
 
 
@@ -135,6 +136,7 @@ class RunSpec:
     script_command: List[str]
     env: Dict[str, str]
     cli_args: List[str]
+    pass_config: bool
     session_name: str
 
 
@@ -182,7 +184,7 @@ def generate_run_specs(
             continue
 
         config_path.write_text(content, encoding="utf-8")
-        script_command, env, cli_args = load_run_config(config_path)
+        script_command, env, cli_args, pass_config = load_run_config(config_path)
         specs.append(
             RunSpec(
                 run_id=run_id,
@@ -191,6 +193,7 @@ def generate_run_specs(
                 script_command=script_command,
                 env=env,
                 cli_args=cli_args,
+                pass_config=pass_config,
                 session_name=build_session_name(script_command, run_id),
             )
         )
@@ -211,8 +214,11 @@ def launch_tmux_session(spec: RunSpec, cuda_device: Optional[str]) -> None:
         env["CUDA_VISIBLE_DEVICES"] = cuda_device
 
     command = list(spec.script_command)
-    command.extend(["--id", spec.run_id])
-    command.extend(spec.cli_args)
+    if spec.pass_config:
+        command.extend(["--config", str(spec.config_path), "--id", spec.run_id])
+    else:
+        command.extend(["--id", spec.run_id])
+        command.extend(spec.cli_args)
 
     shell_command = (
         build_shell_command(command=command, env=env, log_path=spec.log_path)
