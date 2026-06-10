@@ -81,6 +81,19 @@ def parse_env(raw_env) -> Dict[str, str]:
         raise TypeError("`env` must be a mapping")
     return {str(key): str(value) for key, value in raw_env.items()}
 
+
+def read_pass_config(data: dict, config_path: Path) -> bool:
+    """Read pass-config using either supported YAML key spelling."""
+    dashed = data.get("pass-config")
+    underscored = data.get("pass_config")
+
+    if dashed is not None and underscored is not None and dashed != underscored:
+        raise ValueError(f"{config_path} contains conflicting `pass-config` and `pass_config` values")
+
+    value = underscored if underscored is not None else dashed
+    return bool(value) if value is not None else False
+
+
 def load_run_config(config_path: Path) -> Tuple[List[str], Dict[str, str], List[str], bool]:
     """Load one generated YAML config and extract execution settings."""
     with config_path.open("r", encoding="utf-8") as handle:
@@ -98,7 +111,7 @@ def load_run_config(config_path: Path) -> Tuple[List[str], Dict[str, str], List[
         parse_script_command(data["script"]),
         parse_env(data.get("env")),
         build_cli_args(raw_args),
-        data.get("pass-config", False) if data.get("pass-config", False) is not None else False 
+        read_pass_config(data, config_path),
     )
 
 
