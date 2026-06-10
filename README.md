@@ -155,18 +155,25 @@ options:
 
 ### Command Line: Execute YAML Runs
 
-The runtime executor expands a single `.hml` file into YAML configs, hashes each
-generated YAML file, stores it under a temp directory, and launches one `tmux`
-session per run.
+The runtime executor expands one or more `.hml` files into YAML configs, hashes
+each generated YAML file, stores it under a temp directory, and launches one
+`tmux` session per run.
 
 ```
-usage: python -m haml run [-h] -r RUNTIME_CONFIG file
+usage: python -m haml run [-h] -r RUNTIME_CONFIG files [files ...]
 ```
 
 Example:
 
 ```bash
 python -m haml run experiments/train.hml \
+  --runtime-config experiments/runtime.yml
+```
+
+Multiple HAML files can share one runtime config:
+
+```bash
+python -m haml run experiments/train-a.hml experiments/train-b.hml \
   --runtime-config experiments/runtime.yml
 ```
 
@@ -178,8 +185,9 @@ python -m haml run experiments/train.hml --runtime-config experiments/runtime-cp
 
 The runtime uses these rules:
 
-- The HAML file contains only the script config. Runtime settings live in a separate
+- HAML files contain only script configs. Runtime settings live in a separate
   runtime YAML file passed with `--runtime-config`.
+- A single runtime config is shared by all HAML files passed to one `run` command.
 - If sampled configs contain `[[]]` lists, each random sample is combined with
   every exhaustive choice from those lists.
 - The runtime computes `sha256(yaml_content)` and uses the resulting hex digest as the
@@ -187,6 +195,10 @@ The runtime uses these rules:
 - Every launched script receives `--id <run_id>`.
 - Generated configs are written to `<temp_dir>/<run_id>.yaml`. If `temp_dir` is not
   provided, HAML uses a folder below `tempfile.gettempdir()` such as `/tmp/haml-runs/<stem>`.
+  Here, `<stem>` is the HAML filename without directory or extension. For example,
+  `experiments/train-a.hml` uses `/tmp/haml-runs/train-a`.
+- If `temp_dir` is set and multiple HAML files are passed, all generated configs and
+  logs are written below that shared directory.
 - Each tmux-backed run continues to print in the tmux pane and additionally mirrors both
   stdout and stderr to `<temp_dir>/logs/<run_id>.log`.
 - `enable_logging: false` disables the fallback tmux logfile redirection entirely.

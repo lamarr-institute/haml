@@ -37,7 +37,7 @@ def build_generate_parser() -> ArgumentParser:
 def build_run_parser() -> ArgumentParser:
     """Create the runtime execution CLI parser."""
     parser = ArgumentParser(prog="python -m haml run")
-    parser.add_argument("file", help="input HAML file")
+    parser.add_argument("files", nargs="+", help="input HAML file(s)")
     parser.add_argument(
         "-r",
         "--runtime-config",
@@ -88,11 +88,15 @@ def run_executor_mode(args) -> None:
     if runtime_config.rvlimit is not None:
         haml_module.RANDOM_VALUE_LIMIT = runtime_config.rvlimit
 
-    generated, output_dir = run_file(
-        haml_file=args.file,
-        runtime_config_path=args.runtime_config,
-    )
-    logging.info("Prepared %d configs in %s", generated, output_dir)
+    total_generated = 0
+    for haml_file in args.files:
+        generated, output_dir = run_file(
+            haml_file=haml_file,
+            runtime_config_path=args.runtime_config,
+        )
+        total_generated += generated
+        logging.info("Prepared %d configs from %s in %s", generated, haml_file, output_dir)
+    logging.info("Prepared %d configs total from %d HAML file(s)", total_generated, len(args.files))
 
 
 def main(argv=None):
