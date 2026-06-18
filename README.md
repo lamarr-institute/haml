@@ -242,8 +242,8 @@ Runtime config entries:
   `no_log_file: true` is accepted as the inverse spelling.
 - `log_level` defaults to `INFO`. Supported values are `DEBUG`, `INFO`, `WARNING`,
   and `ERROR`.
-- `progress_bar` defaults to `false`. For the tmux backend, set it to `true` to show
-  one TQDM progress bar for multi-run execution instead of per-run scheduling log messages.
+- `progress_bar` defaults to `false`. Set it to `true` to show one TQDM progress bar
+  for multi-run execution instead of per-run scheduling log messages.
 - `cuda_visible_devices` is an optional list. HAML schedules one active run per
   listed value and sets `CUDA_VISIBLE_DEVICES` for that run.
 - `cpu_workers` optionally sets the number of CPU-only runs to execute in parallel.

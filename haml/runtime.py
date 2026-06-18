@@ -355,6 +355,7 @@ def launch_tmux_session(spec: RunSpec, cuda_device: Optional[str], quiet: bool =
 def launch_direct(
     spec: RunSpec,
     cuda_device: Optional[str],
+    quiet: bool = False,
 ) -> Tuple[subprocess.Popen, Optional[IO[str]]]:
     """Launch one run directly and return its process and optional log handle."""
     if spec.log_path is not None:
@@ -366,13 +367,14 @@ def launch_direct(
         stdout=log_handle,
         stderr=subprocess.STDOUT if log_handle is not None else None,
     )
-    LOG.info(
-        "Launched %s on CUDA_VISIBLE_DEVICES=%s using %s%s",
-        spec.session_name,
-        cuda_device if cuda_device is not None else "<unset>",
-        spec.config_path,
-        f" (log: {spec.log_path})" if spec.log_path is not None else "",
-    )
+    if not quiet:
+        LOG.info(
+            "Launched %s on CUDA_VISIBLE_DEVICES=%s using %s%s",
+            spec.session_name,
+            cuda_device if cuda_device is not None else "<unset>",
+            spec.config_path,
+            f" (log: {spec.log_path})" if spec.log_path is not None else "",
+        )
     return process, log_handle
 
 
@@ -426,10 +428,10 @@ def execute_runs(
     active: Dict[int, Tuple[RunSpec, Optional[subprocess.Popen], Optional[IO[str]]]] = {}
     failures: List[Tuple[RunSpec, int]] = []
     completed = 0
-    old_completed = 0
+    old_completed = -1
     total = len(specs)
     progress = None
-    if backend == "tmux" and progress_bar and total > 1:
+    if progress_bar and total > 1:
         progress = tqdm(total=total, desc="Runs", unit="run")
 
     try:
@@ -439,11 +441,22 @@ def execute_runs(
                     continue
                 spec = pending.popleft()
                 if backend == "direct":
-                    process, log_handle = launch_direct(spec, cuda_device)
+                    process, log_handle = launch_direct(spec, cuda_device, quiet=progress is not None)
                     active[slot_id] = (spec, process, log_handle)
                 else:
                     launch_tmux_session(spec, cuda_device, quiet=progress is not None)
                     active[slot_id] = (spec, None, None)
+
+            if old_completed != completed:
+                old_completed = completed
+                message = (
+                    f"Progress: {completed}/{total} complete, "
+                    f"{len(active)} active, {len(pending)} pending"
+                )
+                if progress is None:
+                    LOG.info(message)
+                else:
+                    tqdm.write(message)
 
             for slot_id, (spec, process, log_handle) in list(active.items()):
                 if process is None:
@@ -470,15 +483,6 @@ def execute_runs(
                     progress.update(1)
 
             if pending or active:
-                if progress is None and old_completed != completed:
-                    old_completed = completed
-                    LOG.info(
-                        "Progress: %d/%d complete, %d active, %d pending",
-                        completed,
-                        total,
-                        len(active),
-                        len(pending),
-                    )
                 time.sleep(poll_interval_seconds)
     finally:
         if progress is not None:
