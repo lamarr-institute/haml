@@ -428,7 +428,8 @@ def execute_runs(
     active: Dict[int, Tuple[RunSpec, Optional[subprocess.Popen], Optional[IO[str]]]] = {}
     failures: List[Tuple[RunSpec, int]] = []
     completed = 0
-    old_completed = -1
+    old_completed = 0
+    reported_started = False
     total = len(specs)
     progress = None
     if progress_bar and total > 1:
@@ -447,16 +448,13 @@ def execute_runs(
                     launch_tmux_session(spec, cuda_device, quiet=progress is not None)
                     active[slot_id] = (spec, None, None)
 
-            if old_completed != completed:
-                old_completed = completed
+            if progress is not None and not reported_started:
+                reported_started = True
                 message = (
-                    f"Progress: {completed}/{total} complete, "
+                    f"Started runs: {completed}/{total} complete, "
                     f"{len(active)} active, {len(pending)} pending"
                 )
-                if progress is None:
-                    LOG.info(message)
-                else:
-                    tqdm.write(message)
+                tqdm.write(message)
 
             for slot_id, (spec, process, log_handle) in list(active.items()):
                 if process is None:
@@ -483,6 +481,15 @@ def execute_runs(
                     progress.update(1)
 
             if pending or active:
+                if progress is None and old_completed != completed:
+                    old_completed = completed
+                    LOG.info(
+                        "Progress: %d/%d complete, %d active, %d pending",
+                        completed,
+                        total,
+                        len(active),
+                        len(pending),
+                    )
                 time.sleep(poll_interval_seconds)
     finally:
         if progress is not None:
