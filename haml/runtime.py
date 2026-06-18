@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from tqdm import tqdm
 
 from collections import deque
 from dataclasses import dataclass
@@ -14,8 +15,8 @@ from typing import Deque, Dict, Iterator, List, Optional, Sequence, Tuple
 import numpy as np
 import yaml
 
+from . import haml as haml_module
 from .haml import parse_file
-
 
 LOG = logging.getLogger(__name__)
 
@@ -158,6 +159,7 @@ class RuntimeConfig:
     temp_dir: Optional[str] = None
     skip_existing: Optional[bool] = None
     enable_logging: Optional[bool] = None
+    progress_bar: Optional[bool] = None
     log_level: str = "INFO"
 
 
@@ -183,6 +185,7 @@ def load_runtime_config(runtime_config_path: str) -> RuntimeConfig:
     raw_args = data.get("args", data.get("cli_args", data.get("cli")))
     no_log_file = data.get("no_log_file", data.get("no-log-file"))
     enable_logging = data.get("enable_logging", data.get("enable-log-file"))
+    progress_bar = data.get("progress_bar", data.get("progress-bar"))
     if no_log_file is not None and enable_logging is not None:
         raise ValueError(f"{config_path} contains both `no_log_file` and `enable_logging`")
     if "script" not in data:
@@ -208,6 +211,7 @@ def load_runtime_config(runtime_config_path: str) -> RuntimeConfig:
         enable_logging=(not bool(no_log_file)) if no_log_file is not None else (
             bool(enable_logging) if enable_logging is not None else None
         ),
+        progress_bar=bool(progress_bar) if progress_bar is not None else None,
         log_level=log_level,
     )
 
@@ -274,7 +278,7 @@ def generate_run_specs(
     return specs, generated, output_dir
 
 
-def launch_tmux_session(spec: RunSpec, cuda_device: Optional[str]) -> None:
+def launch_tmux_session(spec: RunSpec, cuda_device: Optional[str], quiet: bool = False) -> None:
     """Launch one run inside a detached tmux session."""
     if shutil.which("tmux") is None:
         raise RuntimeError("tmux is required for execution but was not found in PATH")
@@ -321,13 +325,14 @@ def launch_tmux_session(spec: RunSpec, cuda_device: Optional[str]) -> None:
         check=True,
     )
 
-    LOG.info(
-        "Launched %s on CUDA_VISIBLE_DEVICES=%s using %s%s",
-        spec.session_name,
-        cuda_device if cuda_device is not None else "<unset>",
-        spec.config_path,
-        f" (tmux log: {spec.log_path})" if spec.log_path is not None else "",
-    )
+    if not quiet:
+        LOG.info(
+            "Launched %s on CUDA_VISIBLE_DEVICES=%s using %s%s",
+            spec.session_name,
+            cuda_device if cuda_device is not None else "<unset>",
+            spec.config_path,
+            f" (tmux log: {spec.log_path})" if spec.log_path is not None else "",
+        )
 
 
 def tmux_session_alive(session_name: str) -> bool:
@@ -362,6 +367,7 @@ def execute_runs(
     cuda_devices: Sequence[str],
     cpu_workers: int = 1,
     poll_interval_seconds: float = 2.0,
+    progress_bar: bool = False,
 ) -> None:
     """Execute run specs on a fixed pool of CUDA or CPU slots."""
     if cpu_workers < 1:
@@ -379,31 +385,47 @@ def execute_runs(
     completed = 0
     old_completed = 0
     total = len(specs)
+    progress = None
+    if progress_bar and total > 1:
+        progress = tqdm(total=total, desc="Runs", unit="run")
 
-    while pending or active:
-        for slot_id, cuda_device in zip(slot_ids, slot_devices):
-            if slot_id in active or not pending:
-                continue
-            spec = pending.popleft()
-            launch_tmux_session(spec, cuda_device)
-            active[slot_id] = spec
+    try:
+        while pending or active:
+            for slot_id, cuda_device in zip(slot_ids, slot_devices):
+                if slot_id in active or not pending:
+                    continue
+                spec = pending.popleft()
+                launch_tmux_session(spec, cuda_device, quiet=progress is not None)
+                active[slot_id] = spec
 
-        finished_slots: List[int] = []
-        for slot_id, spec in active.items():
-            if tmux_session_alive(spec.session_name):
-                continue
-            finished_slots.append(slot_id)
-            completed += 1
-            LOG.info("Completed %s (%d/%d)", spec.session_name, completed, total)
+            finished_slots: List[int] = []
+            for slot_id, spec in active.items():
+                if tmux_session_alive(spec.session_name):
+                    continue
+                finished_slots.append(slot_id)
+                completed += 1
+                if progress is None:
+                    LOG.info("Completed %s (%d/%d)", spec.session_name, completed, total)
+                else:
+                    progress.update(1)
 
-        for slot_id in finished_slots:
-            del active[slot_id]
+            for slot_id in finished_slots:
+                del active[slot_id]
 
-        if pending or active:
-            if old_completed != completed:
-                old_completed = completed
-                LOG.info("Progress: %d/%d complete, %d active, %d pending", completed, total, len(active), len(pending))
-            time.sleep(poll_interval_seconds)
+            if pending or active:
+                if progress is None and old_completed != completed:
+                    old_completed = completed
+                    LOG.info(
+                        "Progress: %d/%d complete, %d active, %d pending",
+                        completed,
+                        total,
+                        len(active),
+                        len(pending),
+                    )
+                time.sleep(poll_interval_seconds)
+    finally:
+        if progress is not None:
+            progress.close()
 
 
 def run_file(
@@ -415,6 +437,7 @@ def run_file(
     runtime_config_path: Optional[str] = None,
     skip_existing: Optional[bool] = None,
     enable_logging: Optional[bool] = None,
+    progress_bar: Optional[bool] = None,
     seed: Optional[int] = None,
     keep_empty_lines: Optional[bool] = None,
 ) -> Tuple[int, Path]:
@@ -423,8 +446,6 @@ def run_file(
         raise ValueError("runtime_config_path is required")
     runtime_config = load_runtime_config(runtime_config_path)
     if runtime_config.rvlimit is not None:
-        import haml.haml as haml_module
-
         haml_module.RANDOM_VALUE_LIMIT = runtime_config.rvlimit
     if num_samples is None:
         num_samples = runtime_config.num_samples
@@ -442,6 +463,10 @@ def run_file(
         enable_logging = runtime_config.enable_logging
     if enable_logging is None:
         enable_logging = True
+    if progress_bar is None:
+        progress_bar = runtime_config.progress_bar
+    if progress_bar is None:
+        progress_bar = False
     if seed is None:
         seed = runtime_config.seed
     if keep_empty_lines is None:
@@ -462,5 +487,5 @@ def run_file(
         seed=seed,
         keep_empty_lines=keep_empty_lines,
     )
-    execute_runs(specs, cuda_devices or [], cpu_workers=cpu_workers or 1)
+    execute_runs(specs, cuda_devices or [], cpu_workers=cpu_workers or 1, progress_bar=progress_bar)
     return generated, output_dir

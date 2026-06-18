@@ -210,6 +210,8 @@ The runtime uses these rules:
 - If CUDA devices are omitted, `cpu_workers` controls how many CPU-only jobs are
   launched in parallel. If `cpu_workers` is omitted, runs are launched sequentially.
   In CPU mode, `CUDA_VISIBLE_DEVICES` is left unset.
+- `progress_bar: true` shows one TQDM bar for multi-run execution and suppresses
+  per-run launch/completion log messages.
 
 Runtime config entries:
 
@@ -235,6 +237,8 @@ Runtime config entries:
   files. `no_log_file: true` is accepted as the inverse spelling.
 - `log_level` defaults to `INFO`. Supported values are `DEBUG`, `INFO`, `WARNING`,
   and `ERROR`.
+- `progress_bar` defaults to `false`. Set it to `true` to show one TQDM progress
+  bar for multi-run execution instead of per-run scheduling log messages.
 - `cuda_visible_devices` is an optional list. HAML schedules one active run per
   listed value and sets `CUDA_VISIBLE_DEVICES` for that run.
 - `cpu_workers` optionally sets the number of CPU-only runs to execute in parallel.
@@ -261,6 +265,7 @@ cuda_visible_devices:
   - 1
 temp_dir: /tmp/haml-train
 skip: true
+progress_bar: true
 log_level: INFO
 ```
 
