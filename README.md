@@ -199,9 +199,13 @@ The runtime uses these rules:
   `experiments/train-a.hml` uses `/tmp/haml-runs/train-a`.
 - If `temp_dir` is set and multiple HAML files are passed, all generated configs and
   logs are written below that shared directory.
+- `backend` defaults to `tmux`. Set `backend: direct` to run scripts directly without
+  tmux.
 - Each tmux-backed run continues to print in the tmux pane and additionally mirrors both
   stdout and stderr to `<temp_dir>/logs/<run_id>.log`.
-- `enable_logging: false` disables the fallback tmux logfile redirection entirely.
+- Direct runs write stdout and stderr to `<temp_dir>/logs/<run_id>.log` when logging is
+  enabled, or inherit the terminal output when logging is disabled.
+- `enable_logging: false` disables per-run log files.
 - Failed tmux panes remain open for inspection after the command exits.
 - If `skip` is enabled, existing `<run_id>.yaml` files are assumed to have been run
   successfully already. They are neither rewritten nor relaunched.
@@ -223,6 +227,7 @@ Runtime config entries:
   like `{lr: 0.001, batch-size: 64, use-ema: true}` or a list like
   `[--lr, "0.001", --batch-size, "64"]`.
 - `env` is an optional mapping of environment variables for each launched process.
+- `backend` defaults to `tmux`. Supported values are `tmux` and `direct`.
 - `num_samples` optionally controls how many random HAML samples are generated. If
   omitted, all combinations are generated.
 - `seed` optionally sets the random seed for HAML sampling.
@@ -233,12 +238,12 @@ Runtime config entries:
 - `temp_dir` optionally sets where generated configs and logs are written.
 - `skip` defaults to `false`. Set it to `true` to skip generated config files that
   already exist on disk.
-- `enable_logging` defaults to `true`. Set it to `false` to disable per-run tmux log
-  files. `no_log_file: true` is accepted as the inverse spelling.
+- `enable_logging` defaults to `true`. Set it to `false` to disable per-run log files.
+  `no_log_file: true` is accepted as the inverse spelling.
 - `log_level` defaults to `INFO`. Supported values are `DEBUG`, `INFO`, `WARNING`,
   and `ERROR`.
-- `progress_bar` defaults to `false`. Set it to `true` to show one TQDM progress
-  bar for multi-run execution instead of per-run scheduling log messages.
+- `progress_bar` defaults to `false`. For the tmux backend, set it to `true` to show
+  one TQDM progress bar for multi-run execution instead of per-run scheduling log messages.
 - `cuda_visible_devices` is an optional list. HAML schedules one active run per
   listed value and sets `CUDA_VISIBLE_DEVICES` for that run.
 - `cpu_workers` optionally sets the number of CPU-only runs to execute in parallel.
@@ -279,12 +284,22 @@ temp_dir: /tmp/haml-train
 skip: true
 ```
 
+Direct runtime YAML:
+
+```yaml
+script: python train.py
+backend: direct
+num_samples: 8
+cpu_workers: 4
+temp_dir: /tmp/haml-train
+```
+
 ### Runtime Assumptions
 
 - Your script must accept an `--id` CLI argument.
 - Your script is responsible for storing checkpoints, metrics, and any other results locally.
-- The current backend is intentionally simple: `tmux` for process management and optional
-  `CUDA_VISIBLE_DEVICES` assignment for GPU selection.
+- The runtime supports `tmux` and `direct` backends with optional `CUDA_VISIBLE_DEVICES`
+  assignment for GPU selection.
 - Existing config files are treated as completed runs when `skip` is used. There is no
   separate result verification layer yet.
 

@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import os
 import shlex
 import shutil
 import subprocess
@@ -10,7 +11,7 @@ from tqdm import tqdm
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Deque, Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Deque, Dict, IO, Iterator, List, Optional, Sequence, Tuple
 
 import numpy as np
 import yaml
@@ -161,6 +162,7 @@ class RuntimeConfig:
     enable_logging: Optional[bool] = None
     progress_bar: Optional[bool] = None
     log_level: str = "INFO"
+    backend: str = "tmux"
 
 
 def parse_cuda_devices(raw_devices, config_path: Path) -> Optional[List[str]]:
@@ -194,6 +196,9 @@ def load_runtime_config(runtime_config_path: str) -> RuntimeConfig:
     log_level = str(data.get("log_level", "INFO")).upper()
     if log_level not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
         raise ValueError(f"`log_level` in {config_path} must be one of DEBUG, INFO, WARNING, ERROR")
+    backend = str(data.get("backend", "tmux")).lower()
+    if backend not in {"tmux", "direct"}:
+        raise ValueError(f"`backend` in {config_path} must be either tmux or direct")
 
     return RuntimeConfig(
         script_command=parse_script_command(data["script"]),
@@ -213,6 +218,7 @@ def load_runtime_config(runtime_config_path: str) -> RuntimeConfig:
         ),
         progress_bar=bool(progress_bar) if progress_bar is not None else None,
         log_level=log_level,
+        backend=backend,
     )
 
 
@@ -278,6 +284,25 @@ def generate_run_specs(
     return specs, generated, output_dir
 
 
+def build_run_command(spec: RunSpec) -> List[str]:
+    """Build the script command for one run."""
+    command = list(spec.script_command)
+    if spec.pass_config:
+        command.extend(["--config", str(spec.config_path), "--id", spec.run_id])
+    else:
+        command.extend(["--id", spec.run_id])
+        command.extend(spec.cli_args)
+    return command
+
+
+def build_run_env(spec: RunSpec, cuda_device: Optional[str]) -> Dict[str, str]:
+    """Build the environment for one run."""
+    env = dict(spec.env)
+    if cuda_device is not None:
+        env["CUDA_VISIBLE_DEVICES"] = cuda_device
+    return env
+
+
 def launch_tmux_session(spec: RunSpec, cuda_device: Optional[str], quiet: bool = False) -> None:
     """Launch one run inside a detached tmux session."""
     if shutil.which("tmux") is None:
@@ -285,16 +310,8 @@ def launch_tmux_session(spec: RunSpec, cuda_device: Optional[str], quiet: bool =
 
     if spec.log_path is not None:
         spec.log_path.parent.mkdir(parents=True, exist_ok=True)
-    env = dict(spec.env)
-    if cuda_device is not None:
-        env["CUDA_VISIBLE_DEVICES"] = cuda_device
-
-    command = list(spec.script_command)
-    if spec.pass_config:
-        command.extend(["--config", str(spec.config_path), "--id", spec.run_id])
-    else:
-        command.extend(["--id", spec.run_id])
-        command.extend(spec.cli_args)
+    command = build_run_command(spec)
+    env = build_run_env(spec, cuda_device)
 
     shell_command = (
         build_shell_command(command=command, env=env, log_path=spec.log_path)
@@ -335,6 +352,30 @@ def launch_tmux_session(spec: RunSpec, cuda_device: Optional[str], quiet: bool =
         )
 
 
+def launch_direct(
+    spec: RunSpec,
+    cuda_device: Optional[str],
+) -> Tuple[subprocess.Popen, Optional[IO[str]]]:
+    """Launch one run directly and return its process and optional log handle."""
+    if spec.log_path is not None:
+        spec.log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_handle = None if spec.log_path is None else spec.log_path.open("a", encoding="utf-8")
+    process = subprocess.Popen(
+        build_run_command(spec),
+        env={**os.environ, **build_run_env(spec, cuda_device)},
+        stdout=log_handle,
+        stderr=subprocess.STDOUT if log_handle is not None else None,
+    )
+    LOG.info(
+        "Launched %s on CUDA_VISIBLE_DEVICES=%s using %s%s",
+        spec.session_name,
+        cuda_device if cuda_device is not None else "<unset>",
+        spec.config_path,
+        f" (log: {spec.log_path})" if spec.log_path is not None else "",
+    )
+    return process, log_handle
+
+
 def tmux_session_alive(session_name: str) -> bool:
     """Return whether the tmux session still has a live pane."""
     result = subprocess.run(
@@ -368,6 +409,7 @@ def execute_runs(
     cpu_workers: int = 1,
     poll_interval_seconds: float = 2.0,
     progress_bar: bool = False,
+    backend: str = "tmux",
 ) -> None:
     """Execute run specs on a fixed pool of CUDA or CPU slots."""
     if cpu_workers < 1:
@@ -381,12 +423,13 @@ def execute_runs(
     pending: Deque[RunSpec] = deque(specs)
     slot_devices: List[Optional[str]] = list(cuda_devices) if cuda_devices else [None] * cpu_workers
     slot_ids = list(range(len(slot_devices)))
-    active: Dict[int, RunSpec] = {}
+    active: Dict[int, Tuple[RunSpec, Optional[subprocess.Popen], Optional[IO[str]]]] = {}
+    failures: List[Tuple[RunSpec, int]] = []
     completed = 0
     old_completed = 0
     total = len(specs)
     progress = None
-    if progress_bar and total > 1:
+    if backend == "tmux" and progress_bar and total > 1:
         progress = tqdm(total=total, desc="Runs", unit="run")
 
     try:
@@ -395,22 +438,36 @@ def execute_runs(
                 if slot_id in active or not pending:
                     continue
                 spec = pending.popleft()
-                launch_tmux_session(spec, cuda_device, quiet=progress is not None)
-                active[slot_id] = spec
+                if backend == "direct":
+                    process, log_handle = launch_direct(spec, cuda_device)
+                    active[slot_id] = (spec, process, log_handle)
+                else:
+                    launch_tmux_session(spec, cuda_device, quiet=progress is not None)
+                    active[slot_id] = (spec, None, None)
 
-            finished_slots: List[int] = []
-            for slot_id, spec in active.items():
-                if tmux_session_alive(spec.session_name):
-                    continue
-                finished_slots.append(slot_id)
+            for slot_id, (spec, process, log_handle) in list(active.items()):
+                if process is None:
+                    if tmux_session_alive(spec.session_name):
+                        continue
+                    returncode = 0
+                else:
+                    returncode = process.poll()
+                    if returncode is None:
+                        continue
+                    if log_handle is not None:
+                        log_handle.close()
+
+                del active[slot_id]
                 completed += 1
+                if returncode != 0:
+                    failures.append((spec, returncode))
+                    LOG.error("Failed %s with exit code %d (%d/%d)", spec.session_name, returncode, completed, total)
+                    continue
+
                 if progress is None:
                     LOG.info("Completed %s (%d/%d)", spec.session_name, completed, total)
                 else:
                     progress.update(1)
-
-            for slot_id in finished_slots:
-                del active[slot_id]
 
             if pending or active:
                 if progress is None and old_completed != completed:
@@ -426,6 +483,18 @@ def execute_runs(
     finally:
         if progress is not None:
             progress.close()
+        for _, process, log_handle in active.values():
+            if process is not None:
+                process.terminate()
+            if log_handle is not None:
+                log_handle.close()
+
+    if failures:
+        details = ", ".join(
+            f"{spec.session_name}=exit {code}{f' log {spec.log_path}' if spec.log_path is not None else ''}"
+            for spec, code in failures
+        )
+        raise RuntimeError(f"{len(failures)} direct run(s) failed: {details}")
 
 
 def run_file(
@@ -487,5 +556,11 @@ def run_file(
         seed=seed,
         keep_empty_lines=keep_empty_lines,
     )
-    execute_runs(specs, cuda_devices or [], cpu_workers=cpu_workers or 1, progress_bar=progress_bar)
+    execute_runs(
+        specs,
+        cuda_devices or [],
+        cpu_workers=cpu_workers or 1,
+        progress_bar=progress_bar,
+        backend=runtime_config.backend,
+    )
     return generated, output_dir
