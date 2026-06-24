@@ -139,6 +139,7 @@ class Heartbeat:
         self.path = Path(path) if path else None
         self.interval_seconds = interval_seconds
         self._last_write = 0.0
+        self._last_data: Dict[str, Any] = {}
 
     def __enter__(self) -> "Heartbeat":
         self.update(state="running", force=True)
@@ -164,7 +165,8 @@ class Heartbeat:
         if not force and now - self._last_write < self.interval_seconds:
             return
 
-        data: Dict[str, Any] = {"time": now, "state": state}
+        data: Dict[str, Any] = dict(self._last_data)
+        data.update({"time": now, "state": state})
         if step is not None:
             data["step"] = step
         if total is not None:
@@ -178,6 +180,7 @@ class Heartbeat:
         tmp_path.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
         tmp_path.replace(self.path)
         self._last_write = now
+        self._last_data = data
 
 
 @dataclass
@@ -540,9 +543,10 @@ def update_heartbeat_progress(
     active_progress = sum(fractions)
     if overall_progress is not None:
         target = round(min(overall_progress.total, completed + active_progress), 1)
-        if target > overall_progress.n:
-            overall_progress.update(target - overall_progress.n)
         overall_progress.set_postfix(active=len(active), pending=pending_count, refresh=False)
+        if target != overall_progress.n:
+            overall_progress.n = target
+            overall_progress.refresh()
 
     if running_progress is not None:
         running_progress.total = max(len(active), 1)

@@ -1,7 +1,30 @@
 import sys
 
 from haml import Heartbeat
-from haml.runtime import heartbeat_fraction, read_heartbeat, run_file
+from haml.runtime import (
+    RunSpec,
+    heartbeat_fraction,
+    read_heartbeat,
+    run_file,
+    update_heartbeat_progress,
+)
+
+
+class DummyProgress:
+    def __init__(self, total, n=0):
+        self.total = total
+        self.n = n
+        self.postfix = {}
+        self.refreshed = 0
+
+    def update(self, amount):
+        self.n += amount
+
+    def set_postfix(self, refresh=False, **kwargs):
+        self.postfix = kwargs
+
+    def refresh(self):
+        self.refreshed += 1
 
 
 def test_heartbeat_helper_writes_progress(tmp_path):
@@ -24,6 +47,52 @@ def test_heartbeat_done_counts_as_complete(tmp_path):
     heartbeat.update(state="done", force=True)
 
     assert heartbeat_fraction(read_heartbeat(path)) == 1.0
+
+
+def test_heartbeat_update_preserves_previous_progress_fields(tmp_path):
+    path = tmp_path / "heartbeat.json"
+    heartbeat = Heartbeat(str(path), interval_seconds=0)
+
+    heartbeat.update(step=3, total=10, message="epoch", force=True)
+    heartbeat.update(message="still running", force=True)
+    data = read_heartbeat(path)
+
+    assert data["step"] == 3
+    assert data["total"] == 10
+    assert data["message"] == "still running"
+    assert heartbeat_fraction(data) == 0.3
+
+
+def test_heartbeat_progress_can_correct_total_to_current_snapshot(tmp_path):
+    heartbeat_path = tmp_path / "heartbeat.json"
+    heartbeat_path.write_text('{"time": 1, "state": "running", "step": 1, "total": 10}', encoding="utf-8")
+    spec = RunSpec(
+        run_id="run-a",
+        config_path=tmp_path / "config.yaml",
+        log_path=None,
+        script_command=[sys.executable],
+        env={},
+        cli_args=[],
+        pass_config=False,
+        session_name="run-a",
+        heartbeat_path=heartbeat_path,
+    )
+    overall = DummyProgress(total=20, n=5)
+    running = DummyProgress(total=1, n=0)
+
+    update_heartbeat_progress(
+        overall,
+        running,
+        completed=2,
+        active={0: (spec, None, None)},
+        pending_count=17,
+        heartbeat_timeout=300,
+        warned_stale=set(),
+    )
+
+    assert overall.n == 2.1
+    assert overall.postfix == {"active": 1, "pending": 17}
+    assert running.n == 0.1
 
 
 def test_heartbeat_adds_cli_argument(tmp_path):
