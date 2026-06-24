@@ -206,6 +206,10 @@ The runtime uses these rules:
 - Direct runs write stdout and stderr to `<temp_dir>/logs/<run_id>.log` when logging is
   enabled, or inherit the terminal output when logging is disabled.
 - `enable_logging: false` disables per-run log files.
+- If `heartbeat` is enabled, every launched script receives
+  `--heartbeat <temp_dir>/heartbeats/<run_id>.json`. When heartbeat files contain
+  `step` and `total`, the progress bar uses them for partial progress and ETA.
+  Stale heartbeats produce warnings.
 - Failed tmux panes remain open for inspection after the command exits.
 - If `skip` is enabled, existing `<run_id>.yaml` files are assumed to have been run
   successfully already. They are neither rewritten nor relaunched.
@@ -244,6 +248,10 @@ Runtime config entries:
   and `ERROR`.
 - `progress_bar` defaults to `false`. Set it to `true` to show one TQDM progress bar
   for multi-run execution instead of per-run scheduling log messages.
+- `heartbeat` defaults to `false`. Set it to `true` to pass a per-run heartbeat file
+  path to the launched script.
+- `heartbeat_timeout` defaults to `300` seconds. When a heartbeat file is older than
+  this, HAML reports a stale-heartbeat warning.
 - `cuda_visible_devices` is an optional list. HAML schedules one active run per
   listed value and sets `CUDA_VISIBLE_DEVICES` for that run.
 - `cpu_workers` optionally sets the number of CPU-only runs to execute in parallel.
@@ -271,6 +279,8 @@ cuda_visible_devices:
 temp_dir: /tmp/haml-train
 skip: true
 progress_bar: true
+heartbeat: true
+heartbeat_timeout: 300
 log_level: INFO
 ```
 
@@ -302,6 +312,17 @@ temp_dir: /tmp/haml-train
   assignment for GPU selection.
 - Existing config files are treated as completed runs when `skip` is used. There is no
   separate result verification layer yet.
+
+Optional heartbeat integration for Python scripts:
+
+```python
+from haml import Heartbeat
+
+with Heartbeat(args.heartbeat) as heartbeat:
+    for epoch in range(num_epochs):
+        train_one_epoch()
+        heartbeat.update(step=epoch + 1, total=num_epochs, message=f"epoch {epoch + 1}/{num_epochs}")
+```
 
 ### Python Module
 

@@ -7,4 +7,4 @@ from .haml import (
     RandomValue,
     parse,
     parse_file)
-from .runtime import run_file
+from .runtime import Heartbeat, run_file

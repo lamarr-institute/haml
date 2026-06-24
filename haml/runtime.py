@@ -1,4 +1,5 @@
 import hashlib
+import json
 import logging
 import os
 import shlex
@@ -11,7 +12,7 @@ from tqdm import tqdm
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Deque, Dict, IO, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Deque, Dict, IO, Iterator, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 import yaml
@@ -131,6 +132,54 @@ def build_shell_command(
     return shlex.join(["bash", "-lc", inner_command])
 
 
+class Heartbeat:
+    """Small helper for scripts launched by the HAML runtime."""
+
+    def __init__(self, path: Optional[str], interval_seconds: float = 30.0):
+        self.path = Path(path) if path else None
+        self.interval_seconds = interval_seconds
+        self._last_write = 0.0
+
+    def __enter__(self) -> "Heartbeat":
+        self.update(state="running", force=True)
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.update(state="failed" if exc_type else "done", force=True)
+
+    def update(
+        self,
+        step: Optional[float] = None,
+        total: Optional[float] = None,
+        message: Optional[str] = None,
+        state: str = "running",
+        force: bool = False,
+        **extra: Any,
+    ) -> None:
+        """Write one heartbeat update, rate-limited by interval_seconds."""
+        if self.path is None:
+            return
+
+        now = time.time()
+        if not force and now - self._last_write < self.interval_seconds:
+            return
+
+        data: Dict[str, Any] = {"time": now, "state": state}
+        if step is not None:
+            data["step"] = step
+        if total is not None:
+            data["total"] = total
+        if message is not None:
+            data["message"] = message
+        data.update(extra)
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
+        tmp_path.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+        tmp_path.replace(self.path)
+        self._last_write = now
+
+
 @dataclass
 class RunSpec:
     """Concrete execution plan for one generated YAML config."""
@@ -142,6 +191,7 @@ class RunSpec:
     cli_args: List[str]
     pass_config: bool
     session_name: str
+    heartbeat_path: Optional[Path] = None
 
 
 @dataclass
@@ -163,6 +213,8 @@ class RuntimeConfig:
     progress_bar: Optional[bool] = None
     log_level: str = "INFO"
     backend: str = "tmux"
+    heartbeat: bool = False
+    heartbeat_timeout: float = 300.0
 
 
 def parse_cuda_devices(raw_devices, config_path: Path) -> Optional[List[str]]:
@@ -188,6 +240,7 @@ def load_runtime_config(runtime_config_path: str) -> RuntimeConfig:
     no_log_file = data.get("no_log_file", data.get("no-log-file"))
     enable_logging = data.get("enable_logging", data.get("enable-log-file"))
     progress_bar = data.get("progress_bar", data.get("progress-bar"))
+    heartbeat = data.get("heartbeat", False)
     if no_log_file is not None and enable_logging is not None:
         raise ValueError(f"{config_path} contains both `no_log_file` and `enable_logging`")
     if "script" not in data:
@@ -219,6 +272,8 @@ def load_runtime_config(runtime_config_path: str) -> RuntimeConfig:
         progress_bar=bool(progress_bar) if progress_bar is not None else None,
         log_level=log_level,
         backend=backend,
+        heartbeat=bool(heartbeat),
+        heartbeat_timeout=float(data.get("heartbeat_timeout", data.get("heartbeat-timeout", 300.0))),
     )
 
 
@@ -237,9 +292,12 @@ def generate_run_specs(
     haml_object = parse_file(haml_file)
     output_dir = Path(temp_dir) if temp_dir else default_temp_dir(haml_file)
     log_dir = output_dir / "logs"
+    heartbeat_dir = output_dir / "heartbeats"
     output_dir.mkdir(parents=True, exist_ok=True)
     if enable_logging:
         log_dir.mkdir(parents=True, exist_ok=True)
+    if runtime_config.heartbeat:
+        heartbeat_dir.mkdir(parents=True, exist_ok=True)
 
     def iter_contents() -> Iterator[str]:
         if num_samples is None:
@@ -277,6 +335,7 @@ def generate_run_specs(
                 cli_args=runtime_config.cli_args,
                 pass_config=runtime_config.pass_config,
                 session_name=build_session_name(runtime_config.script_command, run_id),
+                heartbeat_path=(heartbeat_dir / f"{run_id}.json") if runtime_config.heartbeat else None,
             )
         )
         generated += 1
@@ -292,6 +351,8 @@ def build_run_command(spec: RunSpec) -> List[str]:
     else:
         command.extend(["--id", spec.run_id])
         command.extend(spec.cli_args)
+    if spec.heartbeat_path is not None:
+        command.extend(["--heartbeat", str(spec.heartbeat_path)])
     return command
 
 
@@ -405,6 +466,80 @@ def tmux_session_alive(session_name: str) -> bool:
     return any(state == "0" for state in pane_states)
 
 
+def read_heartbeat(path: Optional[Path]) -> Optional[Dict[str, Any]]:
+    """Read one heartbeat file if it exists and contains a JSON object."""
+    if path is None or not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def heartbeat_fraction(data: Dict[str, Any]) -> float:
+    """Return completed fraction from optional heartbeat step/total fields."""
+    if data.get("state") == "done":
+        return 1.0
+    try:
+        step = float(data["step"])
+        total = float(data["total"])
+    except (KeyError, TypeError, ValueError):
+        return 0.0
+    if total <= 0:
+        return 0.0
+    return max(0.0, min(step / total, 1.0))
+
+
+def update_heartbeat_progress(
+    progress,
+    completed: int,
+    active: Dict[int, Tuple[RunSpec, Optional[subprocess.Popen], Optional[IO[str]]]],
+    heartbeat_timeout: float,
+    warned_stale: Set[str],
+) -> None:
+    """Use active heartbeat fractions for progress and stale-heartbeat reporting."""
+    now = time.time()
+    fractions = []
+    stale = 0
+    for spec, _, _ in active.values():
+        data = read_heartbeat(spec.heartbeat_path)
+        if data is None:
+            continue
+        fractions.append(heartbeat_fraction(data))
+        try:
+            heartbeat_time = float(data["time"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if data.get("state") in {"done", "failed"}:
+            warned_stale.discard(spec.run_id)
+            continue
+        if now - heartbeat_time > heartbeat_timeout:
+            stale += 1
+            if spec.run_id not in warned_stale:
+                warned_stale.add(spec.run_id)
+                message = data.get("message")
+                suffix = f", last message: {message}" if message else ""
+                warning = (
+                    f"Stale heartbeat for {spec.run_id[:12]}: "
+                    f"{now - heartbeat_time:.0f}s since last update{suffix}"
+                )
+                if progress is None:
+                    LOG.warning(warning)
+                else:
+                    tqdm.write(warning)
+        else:
+            warned_stale.discard(spec.run_id)
+
+    if progress is None or not fractions:
+        return
+
+    target = min(progress.total, completed + sum(fractions))
+    if target > progress.n:
+        progress.update(target - progress.n)
+    progress.set_postfix(active=len(active), stale=stale, refresh=True)
+
+
 def execute_runs(
     specs: Sequence[RunSpec],
     cuda_devices: Sequence[str],
@@ -412,6 +547,8 @@ def execute_runs(
     poll_interval_seconds: float = 2.0,
     progress_bar: bool = False,
     backend: str = "tmux",
+    seed: Optional[int] = 0,
+    heartbeat_timeout: float = 300.0,
 ) -> None:
     """Execute run specs on a fixed pool of CUDA or CPU slots."""
     if cpu_workers < 1:
@@ -422,13 +559,16 @@ def execute_runs(
         LOG.info("No runs to execute.")
         return
 
-    np.random.shuffle(specs)
+    specs = list(specs)
+    rng = np.random.default_rng(seed)
+    rng.shuffle(specs)
 
     pending: Deque[RunSpec] = deque(specs)
     slot_devices: List[Optional[str]] = list(cuda_devices) if cuda_devices else [None] * cpu_workers
     slot_ids = list(range(len(slot_devices)))
     active: Dict[int, Tuple[RunSpec, Optional[subprocess.Popen], Optional[IO[str]]]] = {}
     failures: List[Tuple[RunSpec, int]] = []
+    warned_stale: Set[str] = set()
     completed = 0
     old_completed = 0
     reported_started = False
@@ -458,6 +598,8 @@ def execute_runs(
                 )
                 tqdm.write(message)
 
+            update_heartbeat_progress(progress, completed, active, heartbeat_timeout, warned_stale)
+
             for slot_id, (spec, process, log_handle) in list(active.items()):
                 if process is None:
                     if tmux_session_alive(spec.session_name):
@@ -480,9 +622,11 @@ def execute_runs(
                 if progress is None:
                     LOG.info("Completed %s (%d/%d)", spec.session_name, completed, total)
                 else:
-                    progress.update(1)
+                    target = max(progress.n, completed)
+                    progress.update(min(target, total) - progress.n)
 
             if pending or active:
+                update_heartbeat_progress(progress, completed, active, heartbeat_timeout, warned_stale)
                 if progress is None and old_completed != completed:
                     old_completed = completed
                     LOG.info(
@@ -575,5 +719,7 @@ def run_file(
         cpu_workers=cpu_workers or 1,
         progress_bar=progress_bar,
         backend=runtime_config.backend,
+        seed=seed,
+        heartbeat_timeout=runtime_config.heartbeat_timeout,
     )
     return generated, output_dir
