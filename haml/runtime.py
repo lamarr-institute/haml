@@ -422,6 +422,8 @@ def execute_runs(
         LOG.info("No runs to execute.")
         return
 
+    np.random.shuffle(specs)
+
     pending: Deque[RunSpec] = deque(specs)
     slot_devices: List[Optional[str]] = list(cuda_devices) if cuda_devices else [None] * cpu_workers
     slot_ids = list(range(len(slot_devices)))
