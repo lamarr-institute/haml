@@ -523,7 +523,7 @@ def update_heartbeat_progress(
                 message = data.get("message")
                 suffix = f", last message: {message}" if message else ""
                 warning = (
-                    f"Stale heartbeat for {spec.run_id[:12]}: "
+                    f"Stale heartbeat for {spec.run_id}: "
                     f"{now - heartbeat_time:.0f}s since last update{suffix}"
                 )
                 if overall_progress is None and running_progress is None:
