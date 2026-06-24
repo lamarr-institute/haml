@@ -135,7 +135,7 @@ def build_shell_command(
 class Heartbeat:
     """Small helper for scripts launched by the HAML runtime."""
 
-    def __init__(self, path: Optional[str], interval_seconds: float = 30.0):
+    def __init__(self, path: Optional[str], interval_seconds: float = 5.0):
         self.path = Path(path) if path else None
         self.interval_seconds = interval_seconds
         self._last_write = 0.0
@@ -507,12 +507,18 @@ def update_heartbeat_progress(
     """Update total/running heartbeat progress bars and stale-heartbeat reporting."""
     now = time.time()
     fractions = []
+    slot_fractions = []
+    missing = 0
     stale = 0
     for spec, _, _ in active.values():
         data = read_heartbeat(spec.heartbeat_path)
         if data is None:
+            slot_fractions.append(0.0)
+            missing += 1
             continue
-        fractions.append(heartbeat_fraction(data))
+        fraction = heartbeat_fraction(data)
+        fractions.append(fraction)
+        slot_fractions.append(fraction)
         try:
             heartbeat_time = float(data["time"])
         except (KeyError, TypeError, ValueError):
@@ -549,9 +555,18 @@ def update_heartbeat_progress(
             overall_progress.refresh()
 
     if running_progress is not None:
-        running_progress.total = max(len(active), 1)
-        running_progress.n = round(min(active_progress, running_progress.total), 1)
-        running_progress.set_postfix(stale=stale, refresh=False)
+        running_progress.total = 1
+        slowest = min(slot_fractions) if slot_fractions else 0.0
+        average = sum(slot_fractions) / len(slot_fractions) if slot_fractions else 0.0
+        fastest = max(slot_fractions) if slot_fractions else 0.0
+        running_progress.n = round(slowest, 3)
+        running_progress.set_postfix(
+            avg=round(average, 3),
+            max=round(fastest, 3),
+            missing=missing,
+            stale=stale,
+            refresh=False,
+        )
         running_progress.refresh()
 
 
@@ -566,7 +581,7 @@ def reset_running_progress_if_needed(
 
     current_run_ids = {spec.run_id for spec, _, _ in active.values()}
     if current_run_ids != running_run_ids:
-        running_progress.reset(total=max(len(active), 1))
+        running_progress.reset(total=1)
     return current_run_ids
 
 

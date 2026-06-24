@@ -27,6 +27,20 @@ class DummyProgress:
         self.refreshed += 1
 
 
+def make_run_spec(tmp_path, run_id, heartbeat_path):
+    return RunSpec(
+        run_id=run_id,
+        config_path=tmp_path / f"{run_id}.yaml",
+        log_path=None,
+        script_command=[sys.executable],
+        env={},
+        cli_args=[],
+        pass_config=False,
+        session_name=run_id,
+        heartbeat_path=heartbeat_path,
+    )
+
+
 def test_heartbeat_helper_writes_progress(tmp_path):
     path = tmp_path / "heartbeat.json"
     heartbeat = Heartbeat(str(path), interval_seconds=0)
@@ -66,17 +80,7 @@ def test_heartbeat_update_preserves_previous_progress_fields(tmp_path):
 def test_heartbeat_progress_can_correct_total_to_current_snapshot(tmp_path):
     heartbeat_path = tmp_path / "heartbeat.json"
     heartbeat_path.write_text('{"time": 1, "state": "running", "step": 1, "total": 10}', encoding="utf-8")
-    spec = RunSpec(
-        run_id="run-a",
-        config_path=tmp_path / "config.yaml",
-        log_path=None,
-        script_command=[sys.executable],
-        env={},
-        cli_args=[],
-        pass_config=False,
-        session_name="run-a",
-        heartbeat_path=heartbeat_path,
-    )
+    spec = make_run_spec(tmp_path, "run-a", heartbeat_path)
     overall = DummyProgress(total=20, n=5)
     running = DummyProgress(total=1, n=0)
 
@@ -86,13 +90,42 @@ def test_heartbeat_progress_can_correct_total_to_current_snapshot(tmp_path):
         completed=2,
         active={0: (spec, None, None)},
         pending_count=17,
-        heartbeat_timeout=300,
+        heartbeat_timeout=9999999999,
         warned_stale=set(),
     )
 
     assert overall.n == 2.1
     assert overall.postfix == {"active": 1, "pending": 17}
     assert running.n == 0.1
+    assert running.total == 1
+
+
+def test_running_progress_reports_slowest_active_slot(tmp_path):
+    heartbeat_a = tmp_path / "a.json"
+    heartbeat_b = tmp_path / "b.json"
+    missing_heartbeat = tmp_path / "missing.json"
+    heartbeat_a.write_text('{"time": 1, "state": "running", "step": 4, "total": 10}', encoding="utf-8")
+    heartbeat_b.write_text('{"time": 1, "state": "running", "step": 7, "total": 10}', encoding="utf-8")
+    running = DummyProgress(total=1, n=0)
+
+    update_heartbeat_progress(
+        None,
+        running,
+        completed=0,
+        active={
+            0: (make_run_spec(tmp_path, "run-a", heartbeat_a), None, None),
+            1: (make_run_spec(tmp_path, "run-b", heartbeat_b), None, None),
+            2: (make_run_spec(tmp_path, "run-c", missing_heartbeat), None, None),
+        },
+        pending_count=0,
+        heartbeat_timeout=9999999999,
+        warned_stale=set(),
+    )
+
+    assert running.n == 0.0
+    assert running.postfix["avg"] == 0.367
+    assert running.postfix["max"] == 0.7
+    assert running.postfix["missing"] == 1
 
 
 def test_heartbeat_adds_cli_argument(tmp_path):

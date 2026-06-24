@@ -211,8 +211,9 @@ The runtime uses these rules:
   `step` and `total`, the progress bar uses them for partial progress and ETA.
   Stale heartbeats produce warnings.
 - With both `progress_bar` and `heartbeat` enabled, HAML shows two bars:
-  `Total` for overall config progress and `Running` for heartbeat progress across
-  currently active runs.
+  `Total` for overall config progress and `Running` for the slowest current active
+  slot, with average, maximum, missing-heartbeat, and stale-heartbeat counts in the
+  postfix.
 - Failed tmux panes remain open for inspection after the command exits.
 - If `skip` is enabled, existing `<run_id>.yaml` files are assumed to have been run
   successfully already. They are neither rewritten nor relaunched.
