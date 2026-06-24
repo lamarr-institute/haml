@@ -492,13 +492,15 @@ def heartbeat_fraction(data: Dict[str, Any]) -> float:
 
 
 def update_heartbeat_progress(
-    progress,
+    overall_progress,
+    running_progress,
     completed: int,
     active: Dict[int, Tuple[RunSpec, Optional[subprocess.Popen], Optional[IO[str]]]],
+    pending_count: int,
     heartbeat_timeout: float,
     warned_stale: Set[str],
 ) -> None:
-    """Use active heartbeat fractions for progress and stale-heartbeat reporting."""
+    """Update total/running heartbeat progress bars and stale-heartbeat reporting."""
     now = time.time()
     fractions = []
     stale = 0
@@ -524,20 +526,43 @@ def update_heartbeat_progress(
                     f"Stale heartbeat for {spec.run_id[:12]}: "
                     f"{now - heartbeat_time:.0f}s since last update{suffix}"
                 )
-                if progress is None:
+                if overall_progress is None and running_progress is None:
                     LOG.warning(warning)
                 else:
                     tqdm.write(warning)
         else:
             warned_stale.discard(spec.run_id)
 
-    if progress is None or not fractions:
+    if overall_progress is None and running_progress is None:
         return
 
-    target = min(progress.total, completed + sum(fractions))
-    if target > progress.n:
-        progress.update(target - progress.n)
-    progress.set_postfix(active=len(active), stale=stale, refresh=True)
+    active_progress = sum(fractions)
+    if overall_progress is not None:
+        target = round(min(overall_progress.total, completed + active_progress), 1)
+        if target > overall_progress.n:
+            overall_progress.update(target - overall_progress.n)
+        overall_progress.set_postfix(active=len(active), pending=pending_count, refresh=False)
+
+    if running_progress is not None:
+        running_progress.total = max(len(active), 1)
+        running_progress.n = round(min(active_progress, running_progress.total), 1)
+        running_progress.set_postfix(stale=stale, refresh=False)
+        running_progress.refresh()
+
+
+def reset_running_progress_if_needed(
+    running_progress,
+    active: Dict[int, Tuple[RunSpec, Optional[subprocess.Popen], Optional[IO[str]]]],
+    running_run_ids: Set[str],
+) -> Set[str]:
+    """Reset the running bar when the active run set changes."""
+    if running_progress is None:
+        return running_run_ids
+
+    current_run_ids = {spec.run_id for spec, _, _ in active.values()}
+    if current_run_ids != running_run_ids:
+        running_progress.reset(total=max(len(active), 1))
+    return current_run_ids
 
 
 def execute_runs(
@@ -573,8 +598,14 @@ def execute_runs(
     old_completed = 0
     reported_started = False
     total = len(specs)
+    heartbeat_enabled = any(spec.heartbeat_path is not None for spec in specs)
     progress = None
-    if progress_bar and total > 1:
+    running_progress = None
+    running_run_ids: Set[str] = set()
+    if progress_bar and total > 1 and heartbeat_enabled:
+        progress = tqdm(total=total, desc="Total", unit="config", position=0)
+        running_progress = tqdm(total=1, desc="Running", unit="config", position=1, leave=False)
+    elif progress_bar and total > 1:
         progress = tqdm(total=total, desc="Runs", unit="run")
 
     try:
@@ -598,7 +629,16 @@ def execute_runs(
                 )
                 tqdm.write(message)
 
-            update_heartbeat_progress(progress, completed, active, heartbeat_timeout, warned_stale)
+            running_run_ids = reset_running_progress_if_needed(running_progress, active, running_run_ids)
+            update_heartbeat_progress(
+                progress if heartbeat_enabled else None,
+                running_progress,
+                completed,
+                active,
+                len(pending),
+                heartbeat_timeout,
+                warned_stale,
+            )
 
             for slot_id, (spec, process, log_handle) in list(active.items()):
                 if process is None:
@@ -621,12 +661,25 @@ def execute_runs(
 
                 if progress is None:
                     LOG.info("Completed %s (%d/%d)", spec.session_name, completed, total)
+                elif not heartbeat_enabled:
+                    target = max(progress.n, completed)
+                    progress.update(min(target, total) - progress.n)
                 else:
                     target = max(progress.n, completed)
                     progress.update(min(target, total) - progress.n)
+                    progress.set_postfix(active=len(active), pending=len(pending), refresh=False)
 
             if pending or active:
-                update_heartbeat_progress(progress, completed, active, heartbeat_timeout, warned_stale)
+                running_run_ids = reset_running_progress_if_needed(running_progress, active, running_run_ids)
+                update_heartbeat_progress(
+                    progress if heartbeat_enabled else None,
+                    running_progress,
+                    completed,
+                    active,
+                    len(pending),
+                    heartbeat_timeout,
+                    warned_stale,
+                )
                 if progress is None and old_completed != completed:
                     old_completed = completed
                     LOG.info(
@@ -638,6 +691,8 @@ def execute_runs(
                     )
                 time.sleep(poll_interval_seconds)
     finally:
+        if running_progress is not None:
+            running_progress.close()
         if progress is not None:
             progress.close()
         for _, process, log_handle in active.values():
