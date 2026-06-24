@@ -495,94 +495,152 @@ def heartbeat_fraction(data: Dict[str, Any]) -> float:
     return max(0.0, min(step / total, 1.0))
 
 
+def format_duration(seconds: Optional[float]) -> str:
+    """Return a compact human-readable duration for progress postfixes."""
+    if seconds is None:
+        return "n/a"
+    seconds = max(0.0, seconds)
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    minutes, seconds = divmod(int(seconds), 60)
+    if minutes < 60:
+        return f"{minutes}m{seconds:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m"
+
+
+def heartbeat_progress_text(data: Optional[Dict[str, Any]], fraction: float) -> str:
+    """Return a concise step/total or percentage progress label."""
+    if data is None:
+        return "no heartbeat"
+    try:
+        step = float(data["step"])
+        total = float(data["total"])
+    except (KeyError, TypeError, ValueError):
+        return f"{fraction:.1%}"
+    return f"{step:g}/{total:g} ({fraction:.1%})"
+
+
+def heartbeat_eta(start_time: Optional[float], fraction: float, now: float) -> Optional[float]:
+    """Estimate remaining slot time from slot start and current heartbeat fraction."""
+    if start_time is None or fraction <= 0.0 or fraction >= 1.0:
+        return None
+    elapsed = max(0.0, now - start_time)
+    return elapsed * (1.0 - fraction) / fraction
+
+
 def update_heartbeat_progress(
     overall_progress,
-    running_progress,
+    slot_progresses: Dict[int, Any],
     completed: int,
     active: Dict[int, Tuple[RunSpec, Optional[subprocess.Popen], Optional[IO[str]]]],
     pending_count: int,
     heartbeat_timeout: float,
     warned_stale: Set[str],
+    slot_started_at: Dict[int, float],
 ) -> None:
-    """Update total/running heartbeat progress bars and stale-heartbeat reporting."""
+    """Update total and per-slot heartbeat progress bars."""
     now = time.time()
     fractions = []
-    slot_fractions = []
-    missing = 0
-    stale = 0
-    for spec, _, _ in active.values():
+    slot_etas = []
+    stale_slots = 0
+    missing_slots = 0
+    for slot_id, (spec, _, _) in active.items():
         data = read_heartbeat(spec.heartbeat_path)
+        fraction = 0.0
+        status = ""
+        message = ""
         if data is None:
-            slot_fractions.append(0.0)
-            missing += 1
-            continue
-        fraction = heartbeat_fraction(data)
-        fractions.append(fraction)
-        slot_fractions.append(fraction)
-        try:
-            heartbeat_time = float(data["time"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if data.get("state") in {"done", "failed"}:
-            warned_stale.discard(spec.run_id)
-            continue
-        if now - heartbeat_time > heartbeat_timeout:
-            stale += 1
-            if spec.run_id not in warned_stale:
-                warned_stale.add(spec.run_id)
-                message = data.get("message")
-                suffix = f", last message: {message}" if message else ""
-                warning = (
-                    f"Stale heartbeat for {spec.run_id}: "
-                    f"{now - heartbeat_time:.0f}s since last update{suffix}"
-                )
-                if overall_progress is None and running_progress is None:
-                    LOG.warning(warning)
-                else:
-                    tqdm.write(warning)
+            missing_slots += 1
+            status = "no heartbeat"
         else:
-            warned_stale.discard(spec.run_id)
+            fraction = heartbeat_fraction(data)
+            fractions.append(fraction)
+            message = str(data.get("message", ""))
+            eta = heartbeat_eta(slot_started_at.get(slot_id), fraction, now)
+            if eta is not None:
+                slot_etas.append(eta)
+            try:
+                heartbeat_time = float(data["time"])
+            except (KeyError, TypeError, ValueError):
+                heartbeat_time = None
+            if data.get("state") in {"done", "failed"}:
+                warned_stale.discard(spec.run_id)
+            elif heartbeat_time is not None and now - heartbeat_time > heartbeat_timeout:
+                stale_slots += 1
+                status = f"! stalled {format_duration(now - heartbeat_time)}"
+                if spec.run_id not in warned_stale:
+                    warned_stale.add(spec.run_id)
+                    suffix = f", last message: {message}" if message else ""
+                    warning = (
+                        f"Stale heartbeat for slot {slot_id} {spec.run_id}: "
+                        f"{now - heartbeat_time:.0f}s since last update{suffix}"
+                    )
+                    if overall_progress is None and not slot_progresses:
+                        LOG.warning(warning)
+                    else:
+                        tqdm.write(warning)
+            else:
+                warned_stale.discard(spec.run_id)
+                status = str(data.get("state", "running"))
 
-    if overall_progress is None and running_progress is None:
+        slot_progress = slot_progresses.get(slot_id)
+        if slot_progress is not None:
+            prefix = "!" if status.startswith("!") else " "
+            slot_progress.desc = f"{prefix} Slot {slot_id} {spec.config_path.name}"
+            slot_progress.total = 1
+            slot_progress.n = round(fraction, 4)
+            slot_progress.set_postfix(
+                progress=heartbeat_progress_text(data, fraction),
+                message=message if message else "-",
+                status=status if status else "running",
+                refresh=False,
+            )
+            slot_progress.refresh()
+
+    if overall_progress is None:
         return
 
     active_progress = sum(fractions)
-    if overall_progress is not None:
-        target = round(min(overall_progress.total, completed + active_progress), 1)
-        overall_progress.set_postfix(active=len(active), pending=pending_count, refresh=False)
-        if target != overall_progress.n:
-            overall_progress.n = target
-            overall_progress.refresh()
-
-    if running_progress is not None:
-        running_progress.total = 1
-        slowest = min(slot_fractions) if slot_fractions else 0.0
-        average = sum(slot_fractions) / len(slot_fractions) if slot_fractions else 0.0
-        fastest = max(slot_fractions) if slot_fractions else 0.0
-        running_progress.n = round(slowest, 3)
-        running_progress.set_postfix(
-            avg=round(average, 3),
-            max=round(fastest, 3),
-            missing=missing,
-            stale=stale,
-            refresh=False,
-        )
-        running_progress.refresh()
+    target = round(min(overall_progress.total, completed + active_progress), 1)
+    eta_variance = float(np.var(slot_etas)) if len(slot_etas) > 1 else 0.0
+    overall_progress.set_postfix(
+        active=len(active),
+        pending=pending_count,
+        stale=stale_slots,
+        missing=missing_slots,
+        eta_var=f"{eta_variance:.1f}s^2" if slot_etas else "n/a",
+        eta_min=format_duration(min(slot_etas) if slot_etas else None),
+        eta_max=format_duration(max(slot_etas) if slot_etas else None),
+        refresh=False,
+    )
+    if target != overall_progress.n:
+        overall_progress.n = target
+    overall_progress.refresh()
 
 
-def reset_running_progress_if_needed(
-    running_progress,
+def reset_slot_progresses_if_needed(
+    slot_progresses: Dict[int, Any],
     active: Dict[int, Tuple[RunSpec, Optional[subprocess.Popen], Optional[IO[str]]]],
-    running_run_ids: Set[str],
-) -> Set[str]:
-    """Reset the running bar when the active run set changes."""
-    if running_progress is None:
-        return running_run_ids
-
-    current_run_ids = {spec.run_id for spec, _, _ in active.values()}
-    if current_run_ids != running_run_ids:
-        running_progress.reset(total=1)
-    return current_run_ids
+    slot_run_ids: Dict[int, Optional[str]],
+) -> Dict[int, Optional[str]]:
+    """Reset each slot bar when the assigned run changes."""
+    for slot_id, slot_progress in slot_progresses.items():
+        spec = active[slot_id][0] if slot_id in active else None
+        current_run_id = spec.run_id if spec is not None else None
+        if slot_run_ids.get(slot_id) == current_run_id:
+            continue
+        slot_progress.reset(total=1)
+        slot_progress.n = 0
+        if spec is None:
+            slot_progress.desc = f"  Slot {slot_id} idle"
+            slot_progress.set_postfix(status="idle", refresh=False)
+        else:
+            slot_progress.desc = f"  Slot {slot_id} {spec.config_path.name}"
+            slot_progress.set_postfix(status="starting", refresh=False)
+        slot_progress.refresh()
+        slot_run_ids[slot_id] = current_run_id
+    return slot_run_ids
 
 
 def execute_runs(
@@ -620,11 +678,17 @@ def execute_runs(
     total = len(specs)
     heartbeat_enabled = any(spec.heartbeat_path is not None for spec in specs)
     progress = None
-    running_progress = None
-    running_run_ids: Set[str] = set()
+    spacer_progress = None
+    slot_progresses: Dict[int, Any] = {}
+    slot_run_ids: Dict[int, Optional[str]] = {}
+    slot_started_at: Dict[int, float] = {}
     if progress_bar and total > 1 and heartbeat_enabled:
-        progress = tqdm(total=total, desc="Total", unit="config", position=0)
-        running_progress = tqdm(total=1, desc="Running", unit="config", position=1, leave=False)
+        slot_progresses = {
+            slot_id: tqdm(total=1, desc=f"  Slot {slot_id} idle", unit="config", position=index, leave=True)
+            for index, slot_id in enumerate(slot_ids)
+        }
+        spacer_progress = tqdm(total=0, desc="", bar_format="{desc}", position=len(slot_ids), leave=True)
+        progress = tqdm(total=total, desc="Total", unit="config", position=len(slot_ids) + 1)
     elif progress_bar and total > 1:
         progress = tqdm(total=total, desc="Runs", unit="run")
 
@@ -640,6 +704,7 @@ def execute_runs(
                 else:
                     launch_tmux_session(spec, cuda_device, quiet=progress is not None)
                     active[slot_id] = (spec, None, None)
+                slot_started_at[slot_id] = time.time()
 
             if progress is not None and not reported_started:
                 reported_started = True
@@ -649,15 +714,16 @@ def execute_runs(
                 )
                 tqdm.write(message)
 
-            running_run_ids = reset_running_progress_if_needed(running_progress, active, running_run_ids)
+            slot_run_ids = reset_slot_progresses_if_needed(slot_progresses, active, slot_run_ids)
             update_heartbeat_progress(
                 progress if heartbeat_enabled else None,
-                running_progress,
+                slot_progresses,
                 completed,
                 active,
                 len(pending),
                 heartbeat_timeout,
                 warned_stale,
+                slot_started_at,
             )
 
             for slot_id, (spec, process, log_handle) in list(active.items()):
@@ -673,6 +739,7 @@ def execute_runs(
                         log_handle.close()
 
                 del active[slot_id]
+                slot_started_at.pop(slot_id, None)
                 completed += 1
                 if returncode != 0:
                     failures.append((spec, returncode))
@@ -690,15 +757,16 @@ def execute_runs(
                     progress.set_postfix(active=len(active), pending=len(pending), refresh=False)
 
             if pending or active:
-                running_run_ids = reset_running_progress_if_needed(running_progress, active, running_run_ids)
+                slot_run_ids = reset_slot_progresses_if_needed(slot_progresses, active, slot_run_ids)
                 update_heartbeat_progress(
                     progress if heartbeat_enabled else None,
-                    running_progress,
+                    slot_progresses,
                     completed,
                     active,
                     len(pending),
                     heartbeat_timeout,
                     warned_stale,
+                    slot_started_at,
                 )
                 if progress is None and old_completed != completed:
                     old_completed = completed
@@ -711,8 +779,10 @@ def execute_runs(
                     )
                 time.sleep(poll_interval_seconds)
     finally:
-        if running_progress is not None:
-            running_progress.close()
+        for slot_progress in slot_progresses.values():
+            slot_progress.close()
+        if spacer_progress is not None:
+            spacer_progress.close()
         if progress is not None:
             progress.close()
         for _, process, log_handle in active.values():

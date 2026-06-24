@@ -1,10 +1,12 @@
 import sys
+import time
 
 from haml import Heartbeat
 from haml.runtime import (
     RunSpec,
     heartbeat_fraction,
     read_heartbeat,
+    reset_slot_progresses_if_needed,
     run_file,
     update_heartbeat_progress,
 )
@@ -14,11 +16,18 @@ class DummyProgress:
     def __init__(self, total, n=0):
         self.total = total
         self.n = n
+        self.desc = ""
         self.postfix = {}
         self.refreshed = 0
+        self.reset_count = 0
 
     def update(self, amount):
         self.n += amount
+
+    def reset(self, total=None):
+        self.total = total
+        self.n = 0
+        self.reset_count += 1
 
     def set_postfix(self, refresh=False, **kwargs):
         self.postfix = kwargs
@@ -82,35 +91,39 @@ def test_heartbeat_progress_can_correct_total_to_current_snapshot(tmp_path):
     heartbeat_path.write_text('{"time": 1, "state": "running", "step": 1, "total": 10}', encoding="utf-8")
     spec = make_run_spec(tmp_path, "run-a", heartbeat_path)
     overall = DummyProgress(total=20, n=5)
-    running = DummyProgress(total=1, n=0)
+    slot_progress = DummyProgress(total=1, n=0)
 
     update_heartbeat_progress(
         overall,
-        running,
+        {0: slot_progress},
         completed=2,
         active={0: (spec, None, None)},
         pending_count=17,
         heartbeat_timeout=9999999999,
         warned_stale=set(),
+        slot_started_at={0: time.time() - 10},
     )
 
     assert overall.n == 2.1
-    assert overall.postfix == {"active": 1, "pending": 17}
-    assert running.n == 0.1
-    assert running.total == 1
+    assert overall.postfix["active"] == 1
+    assert overall.postfix["pending"] == 17
+    assert overall.postfix["eta_var"] == "0.0s^2"
+    assert overall.postfix["eta_min"] != "n/a"
+    assert slot_progress.n == 0.1
+    assert slot_progress.total == 1
 
 
-def test_running_progress_reports_slowest_active_slot(tmp_path):
+def test_slot_progress_reports_each_active_slot(tmp_path):
     heartbeat_a = tmp_path / "a.json"
     heartbeat_b = tmp_path / "b.json"
     missing_heartbeat = tmp_path / "missing.json"
     heartbeat_a.write_text('{"time": 1, "state": "running", "step": 4, "total": 10}', encoding="utf-8")
     heartbeat_b.write_text('{"time": 1, "state": "running", "step": 7, "total": 10}', encoding="utf-8")
-    running = DummyProgress(total=1, n=0)
+    slot_progresses = {0: DummyProgress(total=1), 1: DummyProgress(total=1), 2: DummyProgress(total=1)}
 
     update_heartbeat_progress(
         None,
-        running,
+        slot_progresses,
         completed=0,
         active={
             0: (make_run_spec(tmp_path, "run-a", heartbeat_a), None, None),
@@ -120,12 +133,29 @@ def test_running_progress_reports_slowest_active_slot(tmp_path):
         pending_count=0,
         heartbeat_timeout=9999999999,
         warned_stale=set(),
+        slot_started_at={0: time.time() - 10, 1: time.time() - 10, 2: time.time() - 10},
     )
 
-    assert running.n == 0.0
-    assert running.postfix["avg"] == 0.367
-    assert running.postfix["max"] == 0.7
-    assert running.postfix["missing"] == 1
+    assert slot_progresses[0].n == 0.4
+    assert slot_progresses[0].postfix["progress"] == "4/10 (40.0%)"
+    assert slot_progresses[1].n == 0.7
+    assert slot_progresses[2].n == 0.0
+    assert slot_progresses[2].postfix["status"] == "no heartbeat"
+
+
+def test_slot_progress_resets_when_assignment_changes(tmp_path):
+    old_spec = make_run_spec(tmp_path, "old", tmp_path / "old.json")
+    new_spec = make_run_spec(tmp_path, "new", tmp_path / "new.json")
+    slot_progresses = {0: DummyProgress(total=1, n=0.8)}
+    slot_run_ids = {0: old_spec.run_id}
+
+    reset_slot_progresses_if_needed(slot_progresses, {0: (new_spec, None, None)}, slot_run_ids)
+
+    assert slot_progresses[0].reset_count == 1
+    assert slot_progresses[0].n == 0
+    assert slot_progresses[0].desc == f"  Slot 0 {new_spec.config_path.name}"
+    assert slot_progresses[0].postfix["status"] == "starting"
+    assert slot_run_ids[0] == new_spec.run_id
 
 
 def test_heartbeat_adds_cli_argument(tmp_path):
