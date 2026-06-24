@@ -105,3 +105,46 @@ def test_heartbeat_cli_drives_executor_progress(tmp_path):
 
     assert generated == 1
     assert len(list((output_dir / "heartbeats").glob("*.json"))) == 1
+
+
+def test_direct_backend_discards_child_output_when_logging_disabled(tmp_path, capsys):
+    script = tmp_path / "worker.py"
+    haml_file = tmp_path / "config.hml"
+    runtime_file = tmp_path / "runtime.yml"
+    output_dir = tmp_path / "out"
+
+    script.write_text(
+        "\n".join(
+            [
+                "import argparse",
+                "import sys",
+                "parser = argparse.ArgumentParser()",
+                "parser.add_argument('--config')",
+                "parser.add_argument('--id')",
+                "parser.parse_args()",
+                "print('child stdout')",
+                "print('child stderr', file=sys.stderr)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    haml_file.write_text("value: 1\n", encoding="utf-8")
+    runtime_file.write_text(
+        "\n".join(
+            [
+                f"script: {sys.executable} {script}",
+                "backend: direct",
+                f"temp_dir: {output_dir}",
+                "enable_logging: false",
+                "progress_bar: false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    generated, _ = run_file(str(haml_file), runtime_config_path=str(runtime_file))
+    captured = capsys.readouterr()
+
+    assert generated == 1
+    assert "child stdout" not in captured.out
+    assert "child stderr" not in captured.err

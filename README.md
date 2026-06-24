@@ -204,7 +204,7 @@ The runtime uses these rules:
 - Each tmux-backed run continues to print in the tmux pane and additionally mirrors both
   stdout and stderr to `<temp_dir>/logs/<run_id>.log`.
 - Direct runs write stdout and stderr to `<temp_dir>/logs/<run_id>.log` when logging is
-  enabled, or inherit the terminal output when logging is disabled.
+  enabled. When logging is disabled, direct run output is discarded.
 - `enable_logging: false` disables per-run log files.
 - If `heartbeat` is enabled, every launched script receives
   `--heartbeat <temp_dir>/heartbeats/<run_id>.json`. When heartbeat files contain

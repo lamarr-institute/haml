@@ -422,11 +422,12 @@ def launch_direct(
     if spec.log_path is not None:
         spec.log_path.parent.mkdir(parents=True, exist_ok=True)
     log_handle = None if spec.log_path is None else spec.log_path.open("a", encoding="utf-8")
+    output_target = log_handle if log_handle is not None else subprocess.DEVNULL
     process = subprocess.Popen(
         build_run_command(spec),
         env={**os.environ, **build_run_env(spec, cuda_device)},
-        stdout=log_handle,
-        stderr=subprocess.STDOUT if log_handle is not None else None,
+        stdout=output_target,
+        stderr=subprocess.STDOUT,
     )
     if not quiet:
         LOG.info(
