@@ -212,9 +212,10 @@ The runtime uses these rules:
   Stale heartbeats produce warnings.
 - With both `progress_bar` and `heartbeat` enabled, HAML shows one progress bar per
   execution slot, one blank spacer line, and then `Total` for overall config progress.
-  Each slot line shows the slot number, config filename, heartbeat message, current
-  heartbeat progress, and stalled or missing-heartbeat status. The `Total` postfix
-  includes ETA variance plus minimum and maximum slot ETA.
+  Each slot line uses `Slot <n> <config> | <status> | <message> | <bar> |
+  <step>/<total> [ETA]`; stalled slots are prefixed with `!`, and slots without a
+  heartbeat show `no heartbeat`. The `Total` postfix includes ETA variance plus
+  minimum and maximum slot ETA.
 - Failed tmux panes remain open for inspection after the command exits.
 - If `skip` is enabled, existing `<run_id>.yaml` files are assumed to have been run
   successfully already. They are neither rewritten nor relaunched.

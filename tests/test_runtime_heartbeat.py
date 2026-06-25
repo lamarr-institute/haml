@@ -109,8 +109,9 @@ def test_heartbeat_progress_can_correct_total_to_current_snapshot(tmp_path):
     assert overall.postfix["pending"] == 17
     assert overall.postfix["eta_var"] == "0.0s^2"
     assert overall.postfix["eta_min"] != "n/a"
-    assert slot_progress.n == 0.1
-    assert slot_progress.total == 1
+    assert slot_progress.n == 1
+    assert slot_progress.total == 10
+    assert slot_progress.desc == f"  Slot 0 {spec.config_path.name} | running | - | 1/10"
 
 
 def test_slot_progress_reports_each_active_slot(tmp_path):
@@ -136,11 +137,14 @@ def test_slot_progress_reports_each_active_slot(tmp_path):
         slot_started_at={0: time.time() - 10, 1: time.time() - 10, 2: time.time() - 10},
     )
 
-    assert slot_progresses[0].n == 0.4
-    assert slot_progresses[0].postfix["progress"] == "4/10 (40.0%)"
-    assert slot_progresses[1].n == 0.7
+    assert slot_progresses[0].n == 4
+    assert slot_progresses[0].total == 10
+    assert slot_progresses[0].desc.endswith("| running | - | 4/10")
+    assert slot_progresses[1].n == 7
+    assert slot_progresses[1].total == 10
     assert slot_progresses[2].n == 0.0
-    assert slot_progresses[2].postfix["status"] == "no heartbeat"
+    assert slot_progresses[2].total == 1
+    assert slot_progresses[2].desc.endswith("| no heartbeat | - | no heartbeat")
 
 
 def test_slot_progress_resets_when_assignment_changes(tmp_path):
@@ -153,8 +157,7 @@ def test_slot_progress_resets_when_assignment_changes(tmp_path):
 
     assert slot_progresses[0].reset_count == 1
     assert slot_progresses[0].n == 0
-    assert slot_progresses[0].desc == f"  Slot 0 {new_spec.config_path.name}"
-    assert slot_progresses[0].postfix["status"] == "starting"
+    assert slot_progresses[0].desc == f"  Slot 0 {new_spec.config_path.name} | starting | - | 0/1"
     assert slot_run_ids[0] == new_spec.run_id
 
 

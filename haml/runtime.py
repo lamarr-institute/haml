@@ -510,15 +510,29 @@ def format_duration(seconds: Optional[float]) -> str:
 
 
 def heartbeat_progress_text(data: Optional[Dict[str, Any]], fraction: float) -> str:
-    """Return a concise step/total or percentage progress label."""
+    """Return a concise step/total progress label."""
     if data is None:
         return "no heartbeat"
+    try:
+        step = int(float(data["step"]))
+        total = int(float(data["total"]))
+    except (KeyError, TypeError, ValueError):
+        return f"{fraction:.1%}"
+    return f"{step}/{total}"
+
+
+def heartbeat_counts(data: Optional[Dict[str, Any]]) -> Tuple[float, float]:
+    """Return raw step/total counts for tqdm slot bars."""
+    if data is None:
+        return 0.0, 1.0
     try:
         step = float(data["step"])
         total = float(data["total"])
     except (KeyError, TypeError, ValueError):
-        return f"{fraction:.1%}"
-    return f"{step:g}/{total:g} ({fraction:.1%})"
+        return heartbeat_fraction(data), 1.0
+    if total <= 0:
+        return 0.0, 1.0
+    return max(0.0, min(step, total)), total
 
 
 def heartbeat_eta(start_time: Optional[float], fraction: float, now: float) -> Optional[float]:
@@ -587,15 +601,16 @@ def update_heartbeat_progress(
         slot_progress = slot_progresses.get(slot_id)
         if slot_progress is not None:
             prefix = "!" if status.startswith("!") else " "
-            slot_progress.desc = f"{prefix} Slot {slot_id} {spec.config_path.name}"
-            slot_progress.total = 1
-            slot_progress.n = round(fraction, 4)
-            slot_progress.set_postfix(
-                progress=heartbeat_progress_text(data, fraction),
-                message=message if message else "-",
-                status=status if status else "running",
-                refresh=False,
+            current, total = heartbeat_counts(data)
+            status_text = status if status else "running"
+            message_text = message if message else "-"
+            progress_text = heartbeat_progress_text(data, fraction)
+            slot_progress.desc = (
+                f"{prefix} Slot {slot_id} {spec.config_path.name} | "
+                f"{status_text} | {message_text} | {progress_text}"
             )
+            slot_progress.total = total
+            slot_progress.n = current
             slot_progress.refresh()
 
     if overall_progress is None:
@@ -633,11 +648,9 @@ def reset_slot_progresses_if_needed(
         slot_progress.reset(total=1)
         slot_progress.n = 0
         if spec is None:
-            slot_progress.desc = f"  Slot {slot_id} idle"
-            slot_progress.set_postfix(status="idle", refresh=False)
+            slot_progress.desc = f"  Slot {slot_id} idle | idle | - | 0/1"
         else:
-            slot_progress.desc = f"  Slot {slot_id} {spec.config_path.name}"
-            slot_progress.set_postfix(status="starting", refresh=False)
+            slot_progress.desc = f"  Slot {slot_id} {spec.config_path.name} | starting | - | 0/1"
         slot_progress.refresh()
         slot_run_ids[slot_id] = current_run_id
     return slot_run_ids
@@ -683,8 +696,15 @@ def execute_runs(
     slot_run_ids: Dict[int, Optional[str]] = {}
     slot_started_at: Dict[int, float] = {}
     if progress_bar and total > 1 and heartbeat_enabled:
+        slot_bar_format = "{desc} |{bar}| {n_fmt}/{total_fmt} [{remaining}]"
         slot_progresses = {
-            slot_id: tqdm(total=1, desc=f"  Slot {slot_id} idle", unit="config", position=index, leave=True)
+            slot_id: tqdm(
+                total=1,
+                desc=f"  Slot {slot_id} idle | idle | - | 0/1",
+                position=index,
+                leave=True,
+                bar_format=slot_bar_format,
+            )
             for index, slot_id in enumerate(slot_ids)
         }
         spacer_progress = tqdm(total=0, desc="", bar_format="{desc}", position=len(slot_ids), leave=True)
