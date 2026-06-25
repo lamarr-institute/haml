@@ -86,7 +86,7 @@ def test_heartbeat_update_preserves_previous_progress_fields(tmp_path):
     assert heartbeat_fraction(data) == 0.3
 
 
-def test_heartbeat_progress_can_correct_total_to_current_snapshot(tmp_path):
+def test_heartbeat_progress_keeps_total_on_completed_runs(tmp_path):
     heartbeat_path = tmp_path / "heartbeat.json"
     heartbeat_path.write_text('{"time": 1, "state": "running", "step": 1, "total": 10}', encoding="utf-8")
     spec = make_run_spec(tmp_path, "run-a", heartbeat_path)
@@ -104,14 +104,14 @@ def test_heartbeat_progress_can_correct_total_to_current_snapshot(tmp_path):
         slot_started_at={0: time.time() - 10},
     )
 
-    assert overall.n == 2.1
+    assert overall.n == 2
     assert overall.postfix["active"] == 1
     assert overall.postfix["pending"] == 17
     assert overall.postfix["eta_var"] == "0.0s^2"
     assert overall.postfix["eta_min"] != "n/a"
     assert slot_progress.n == 1
     assert slot_progress.total == 10
-    assert slot_progress.desc == f"  Slot 0 {spec.config_path.name} | running | - | 1/10"
+    assert slot_progress.desc == f"  Slot 0 {spec.config_path.name} | running | -"
 
 
 def test_slot_progress_reports_each_active_slot(tmp_path):
@@ -139,12 +139,12 @@ def test_slot_progress_reports_each_active_slot(tmp_path):
 
     assert slot_progresses[0].n == 4
     assert slot_progresses[0].total == 10
-    assert slot_progresses[0].desc.endswith("| running | - | 4/10")
+    assert slot_progresses[0].desc.endswith("| running | -")
     assert slot_progresses[1].n == 7
     assert slot_progresses[1].total == 10
     assert slot_progresses[2].n == 0.0
     assert slot_progresses[2].total == 1
-    assert slot_progresses[2].desc.endswith("| no heartbeat | - | no heartbeat")
+    assert slot_progresses[2].desc.endswith("| no heartbeat | -")
 
 
 def test_slot_progress_resets_when_assignment_changes(tmp_path):
@@ -157,7 +157,7 @@ def test_slot_progress_resets_when_assignment_changes(tmp_path):
 
     assert slot_progresses[0].reset_count == 1
     assert slot_progresses[0].n == 0
-    assert slot_progresses[0].desc == f"  Slot 0 {new_spec.config_path.name} | starting | - | 0/1"
+    assert slot_progresses[0].desc == f"  Slot 0 {new_spec.config_path.name} | starting | -"
     assert slot_run_ids[0] == new_spec.run_id
 
 

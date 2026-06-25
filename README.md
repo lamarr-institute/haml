@@ -211,7 +211,7 @@ The runtime uses these rules:
   `step` and `total`, the progress bar uses them for partial progress and ETA.
   Stale heartbeats produce warnings.
 - With both `progress_bar` and `heartbeat` enabled, HAML shows one progress bar per
-  execution slot, one blank spacer line, and then `Total` for overall config progress.
+  execution slot, one blank spacer line, and then `Total` for completed configs.
   Each slot line uses `Slot <n> <config> | <status> | <message> | <bar> |
   <step>/<total> [ETA]`; stalled slots are prefixed with `!`, and slots without a
   heartbeat show `no heartbeat`. The `Total` postfix includes ETA variance plus
