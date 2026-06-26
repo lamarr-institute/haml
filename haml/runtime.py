@@ -10,7 +10,7 @@ import time
 from tqdm import tqdm
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Deque, Dict, IO, Iterator, List, Optional, Sequence, Set, Tuple
 
@@ -195,6 +195,7 @@ class RunSpec:
     pass_config: bool
     session_name: str
     heartbeat_path: Optional[Path] = None
+    append_runtime_args: bool = True
 
 
 @dataclass
@@ -218,6 +219,19 @@ class RuntimeConfig:
     backend: str = "tmux"
     heartbeat: bool = False
     heartbeat_timeout: float = 300.0
+    inner_cpu_workers: Optional[int] = None
+    configs_per_container: Optional[int] = None
+    slurm_memory: str = "32GB"
+    slurm_cpus: int = 32
+    slurm_partition: str = "CPU"
+    slurm_container_image: str = "nvcr.io/ml2r/interactive_ubuntu"
+    slurm_container_prefix: str = "haml"
+    slurm_job_prefix: str = "haml"
+    slurm_mail_user: Optional[str] = None
+    slurm_mail_type: Optional[str] = None
+    slurm_wrapper: str = "scripts/haml_run_configs.sh"
+    workdir: str = "."
+    setup: List[str] = field(default_factory=list)
 
 
 def parse_cuda_devices(raw_devices, config_path: Path) -> Optional[List[str]]:
@@ -227,6 +241,17 @@ def parse_cuda_devices(raw_devices, config_path: Path) -> Optional[List[str]]:
     if isinstance(raw_devices, list):
         return [str(device) for device in raw_devices]
     raise TypeError(f"`cuda_visible_devices` in {config_path} must be a list")
+
+
+def parse_setup(raw_setup, config_path: Path) -> List[str]:
+    """Normalize optional container setup commands into shell fragments."""
+    if raw_setup is None:
+        return []
+    if isinstance(raw_setup, str):
+        return [raw_setup]
+    if isinstance(raw_setup, list):
+        return [str(command) for command in raw_setup]
+    raise TypeError(f"`setup` in {config_path} must be a string or list")
 
 
 def load_runtime_config(runtime_config_path: str) -> RuntimeConfig:
@@ -253,8 +278,8 @@ def load_runtime_config(runtime_config_path: str) -> RuntimeConfig:
     if log_level not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
         raise ValueError(f"`log_level` in {config_path} must be one of DEBUG, INFO, WARNING, ERROR")
     backend = str(data.get("backend", "tmux")).lower()
-    if backend not in {"tmux", "direct"}:
-        raise ValueError(f"`backend` in {config_path} must be either tmux or direct")
+    if backend not in {"tmux", "direct", "slurm"}:
+        raise ValueError(f"`backend` in {config_path} must be one of tmux, direct, or slurm")
 
     return RuntimeConfig(
         script_command=parse_script_command(data["script"]),
@@ -277,6 +302,21 @@ def load_runtime_config(runtime_config_path: str) -> RuntimeConfig:
         backend=backend,
         heartbeat=bool(heartbeat),
         heartbeat_timeout=float(data.get("heartbeat_timeout", data.get("heartbeat-timeout", 300.0))),
+        inner_cpu_workers=int(data["inner_cpu_workers"]) if data.get("inner_cpu_workers") is not None else None,
+        configs_per_container=(
+            int(data["configs_per_container"]) if data.get("configs_per_container") is not None else None
+        ),
+        slurm_memory=str(data.get("slurm_memory", "32GB")),
+        slurm_cpus=int(data.get("slurm_cpus", 32)),
+        slurm_partition=str(data.get("slurm_partition", "CPU")),
+        slurm_container_image=str(data.get("slurm_container_image", "nvcr.io/ml2r/interactive_ubuntu")),
+        slurm_container_prefix=str(data.get("slurm_container_prefix", "haml")),
+        slurm_job_prefix=str(data.get("slurm_job_prefix", data.get("slurm_container_prefix", "haml"))),
+        slurm_mail_user=str(data["slurm_mail_user"]) if data.get("slurm_mail_user") is not None else None,
+        slurm_mail_type=str(data["slurm_mail_type"]) if data.get("slurm_mail_type") is not None else None,
+        slurm_wrapper=str(data.get("slurm_wrapper", "scripts/haml_run_configs.sh")),
+        workdir=str(data.get("workdir", ".")),
+        setup=parse_setup(data.get("setup"), config_path),
     )
 
 
@@ -349,6 +389,8 @@ def generate_run_specs(
 def build_run_command(spec: RunSpec) -> List[str]:
     """Build the script command for one run."""
     command = list(spec.script_command)
+    if not spec.append_runtime_args:
+        return command
     if spec.pass_config:
         command.extend(["--config", str(spec.config_path), "--id", spec.run_id])
     else:
@@ -640,6 +682,136 @@ def reset_slot_progresses_if_needed(
     return slot_run_ids
 
 
+def chunk_run_specs(specs: Sequence[RunSpec], chunk_size: int) -> List[List[RunSpec]]:
+    """Split run specs into fixed-size chunks."""
+    if chunk_size < 1:
+        raise ValueError("configs_per_container must be >= 1")
+    return [list(specs[index:index + chunk_size]) for index in range(0, len(specs), chunk_size)]
+
+
+def build_container_inner_command(
+    chunk: Sequence[RunSpec],
+    runtime_config: RuntimeConfig,
+    inner_cpu_workers: int,
+    enable_logging: bool,
+) -> str:
+    """Build the shell command executed inside one Slurm container."""
+    if not chunk:
+        raise ValueError("Cannot build a container command for an empty chunk")
+
+    first_spec = chunk[0]
+    wrapper = os.path.expanduser(runtime_config.slurm_wrapper)
+    workdir = os.path.expanduser(runtime_config.workdir)
+    log_dir = first_spec.log_path.parent if first_spec.log_path is not None else None
+    heartbeat_dir = first_spec.heartbeat_path.parent if first_spec.heartbeat_path is not None else None
+
+    wrapper_args = [
+        wrapper,
+        "--workers",
+        str(inner_cpu_workers),
+        "--script",
+        shlex.join(runtime_config.script_command),
+        "--pass-config",
+        "true" if runtime_config.pass_config else "false",
+        "--enable-logging",
+        "true" if enable_logging else "false",
+    ]
+    if runtime_config.cli_args:
+        wrapper_args.extend(["--cli-args", shlex.join(runtime_config.cli_args)])
+    if log_dir is not None:
+        wrapper_args.extend(["--log-dir", str(log_dir)])
+    if heartbeat_dir is not None:
+        wrapper_args.extend(["--heartbeat-dir", str(heartbeat_dir)])
+    for key, value in runtime_config.env.items():
+        wrapper_args.extend(["--env", f"{key}={value}"])
+    wrapper_args.append("--")
+    wrapper_args.extend(str(spec.config_path) for spec in chunk)
+
+    commands = [f"cd {shlex.quote(workdir)}"]
+    commands.extend(runtime_config.setup)
+    commands.append(shlex.join(wrapper_args))
+    return " && ".join(commands)
+
+
+def build_slurm_chunk_spec(
+    chunk: Sequence[RunSpec],
+    runtime_config: RuntimeConfig,
+    chunk_index: int,
+    inner_cpu_workers: int,
+    enable_logging: bool,
+) -> RunSpec:
+    """Build one synthetic run spec that launches a Slurm container for a chunk."""
+    if not chunk:
+        raise ValueError("Cannot build a Slurm chunk spec for an empty chunk")
+
+    first_spec = chunk[0]
+    shard_id = f"shard-{chunk_index:04d}-{first_spec.run_id[:8]}"
+    container_name = f"{runtime_config.slurm_container_prefix}-{shard_id}"
+    job_name = f"{runtime_config.slurm_job_prefix}-{shard_id}"
+    inner_command = build_container_inner_command(
+        chunk=chunk,
+        runtime_config=runtime_config,
+        inner_cpu_workers=inner_cpu_workers,
+        enable_logging=enable_logging,
+    )
+
+    command = [
+        "srun",
+        "--mem",
+        runtime_config.slurm_memory,
+        "--export",
+        "ALL",
+        "-c",
+        str(runtime_config.slurm_cpus),
+        f"--container-name={container_name}",
+        "-p",
+        runtime_config.slurm_partition,
+        f"--job-name={job_name}",
+        f"--container-image={runtime_config.slurm_container_image}",
+    ]
+    if runtime_config.slurm_mail_user is not None:
+        command.append(f"--mail-user={runtime_config.slurm_mail_user}")
+    if runtime_config.slurm_mail_type is not None:
+        command.append(f"--mail-type={runtime_config.slurm_mail_type}")
+    command.extend(["--pty", "/bin/bash", "-lc", inner_command])
+
+    return RunSpec(
+        run_id=shard_id,
+        config_path=first_spec.config_path,
+        log_path=None,
+        script_command=command,
+        env={},
+        cli_args=[],
+        pass_config=False,
+        session_name=shard_id,
+        heartbeat_path=None,
+        append_runtime_args=False,
+    )
+
+
+def build_slurm_run_specs(
+    specs: Sequence[RunSpec],
+    runtime_config: RuntimeConfig,
+    enable_logging: bool,
+) -> List[RunSpec]:
+    """Build synthetic tmux-launched Slurm container specs from concrete runs."""
+    inner_cpu_workers = runtime_config.inner_cpu_workers or 1
+    if inner_cpu_workers < 1:
+        raise ValueError("inner_cpu_workers must be >= 1")
+    chunk_size = runtime_config.configs_per_container or inner_cpu_workers
+    chunks = chunk_run_specs(specs, chunk_size)
+    return [
+        build_slurm_chunk_spec(
+            chunk=chunk,
+            runtime_config=runtime_config,
+            chunk_index=index,
+            inner_cpu_workers=inner_cpu_workers,
+            enable_logging=enable_logging,
+        )
+        for index, chunk in enumerate(chunks)
+    ]
+
+
 def execute_runs(
     specs: Sequence[RunSpec],
     cuda_devices: Sequence[str],
@@ -649,8 +821,21 @@ def execute_runs(
     backend: str = "tmux",
     seed: Optional[int] = 0,
     heartbeat_timeout: float = 300.0,
+    runtime_config: Optional[RuntimeConfig] = None,
+    enable_logging: bool = True,
 ) -> None:
     """Execute run specs on a fixed pool of CUDA or CPU slots."""
+    if backend == "slurm":
+        if runtime_config is None:
+            raise ValueError("runtime_config is required for the slurm backend")
+        if cuda_devices:
+            raise ValueError("cuda_visible_devices cannot be used with the slurm backend")
+        specs = list(specs)
+        rng = np.random.default_rng(seed)
+        rng.shuffle(specs)
+        specs = build_slurm_run_specs(specs, runtime_config, enable_logging=enable_logging)
+        backend = "tmux"
+
     if cpu_workers < 1:
         raise ValueError("cpu_workers must be >= 1")
     if cuda_devices and cpu_workers != 1:
@@ -870,5 +1055,7 @@ def run_file(
         backend=runtime_config.backend,
         seed=seed,
         heartbeat_timeout=runtime_config.heartbeat_timeout,
+        runtime_config=runtime_config,
+        enable_logging=enable_logging,
     )
     return generated, output_dir

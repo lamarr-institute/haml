@@ -200,7 +200,8 @@ The runtime uses these rules:
 - If `temp_dir` is set and multiple HAML files are passed, all generated configs and
   logs are written below that shared directory.
 - `backend` defaults to `tmux`. Set `backend: direct` to run scripts directly without
-  tmux.
+  tmux. Set `backend: slurm` to use gateway tmux sessions that launch Slurm
+  containers, with direct-style parallel execution inside each container.
 - Each tmux-backed run continues to print in the tmux pane and additionally mirrors both
   stdout and stderr to `<temp_dir>/logs/<run_id>.log`.
 - Direct runs write stdout and stderr to `<temp_dir>/logs/<run_id>.log` when logging is
@@ -237,7 +238,7 @@ Runtime config entries:
   like `{lr: 0.001, batch-size: 64, use-ema: true}` or a list like
   `[--lr, "0.001", --batch-size, "64"]`.
 - `env` is an optional mapping of environment variables for each launched process.
-- `backend` defaults to `tmux`. Supported values are `tmux` and `direct`.
+- `backend` defaults to `tmux`. Supported values are `tmux`, `direct`, and `slurm`.
 - `num_samples` optionally controls how many random HAML samples are generated. If
   omitted, all combinations are generated.
 - `seed` optionally sets the random seed for HAML sampling.
@@ -261,7 +262,21 @@ Runtime config entries:
 - `cuda_visible_devices` is an optional list. HAML schedules one active run per
   listed value and sets `CUDA_VISIBLE_DEVICES` for that run.
 - `cpu_workers` optionally sets the number of CPU-only runs to execute in parallel.
-  It cannot be combined with `cuda_visible_devices`.
+  It cannot be combined with `cuda_visible_devices`. With `backend: slurm`, this is
+  the number of active Slurm containers / gateway tmux sessions.
+- `inner_cpu_workers` optionally sets the number of direct-style workers inside each
+  Slurm container. It is only used with `backend: slurm`.
+- `configs_per_container` optionally sets how many generated configs are assigned to
+  one Slurm container. If omitted, it defaults to `inner_cpu_workers`.
+- `slurm_memory`, `slurm_cpus`, `slurm_partition`, `slurm_container_image`,
+  `slurm_container_prefix`, `slurm_job_prefix`, `slurm_mail_user`, and
+  `slurm_mail_type` configure the Slurm `srun` command used by `backend: slurm`.
+- `workdir` sets the directory to enter inside the Slurm container before launching
+  the per-config worker.
+- `setup` optionally lists shell commands to run inside the container before launching
+  configs, such as installing dependencies or activating a virtual environment.
+- `slurm_wrapper` optionally sets the helper script used inside the container. It
+  defaults to `scripts/haml_run_configs.sh`.
 
 Example generated YAML:
 
@@ -310,12 +325,40 @@ cpu_workers: 4
 temp_dir: /tmp/haml-train
 ```
 
+Slurm runtime YAML:
+
+```yaml
+script: python run.py
+backend: slurm
+num_samples: 20
+cpu_workers: 6
+inner_cpu_workers: 4
+configs_per_container: 20
+temp_dir: ./haml-train
+enable_logging: true
+progress_bar: true
+heartbeat: true
+heartbeat_timeout: 300
+slurm_memory: 32GB
+slurm_cpus: 32
+slurm_partition: CPU
+slurm_container_image: nvcr.io/ml2r/interactive_ubuntu
+slurm_container_prefix: buschjae-olb
+slurm_job_prefix: buschjae-olb
+slurm_mail_user: sebastian.buschjaeger@tu-dortmund.de
+slurm_mail_type: ALL
+workdir: ~/projects/online-learning-benchmark
+setup:
+  - apt-get -o Dpkg::Options::=--force-not-root install -y openjdk-25-jre
+  - source .venv/olbc/bin/activate
+```
+
 ### Runtime Assumptions
 
 - Your script must accept an `--id` CLI argument.
 - Your script is responsible for storing checkpoints, metrics, and any other results locally.
-- The runtime supports `tmux` and `direct` backends with optional `CUDA_VISIBLE_DEVICES`
-  assignment for GPU selection.
+- The runtime supports `tmux`, `direct`, and `slurm` backends with optional
+  `CUDA_VISIBLE_DEVICES` assignment for GPU selection on non-Slurm backends.
 - Existing config files are treated as completed runs when `skip` is used. There is no
   separate result verification layer yet.
 

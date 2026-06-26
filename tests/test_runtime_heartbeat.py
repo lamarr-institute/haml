@@ -4,7 +4,10 @@ import time
 from haml import Heartbeat
 from haml.runtime import (
     RunSpec,
+    build_run_command,
+    build_slurm_run_specs,
     heartbeat_fraction,
+    load_runtime_config,
     read_heartbeat,
     reset_slot_progresses_if_needed,
     run_file,
@@ -159,6 +162,110 @@ def test_slot_progress_resets_when_assignment_changes(tmp_path):
     assert slot_progresses[0].n == 0
     assert slot_progresses[0].desc == f"  Slot 0 {new_spec.config_path.name} | starting | -"
     assert slot_run_ids[0] == new_spec.run_id
+
+
+def test_slurm_runtime_config_parses_flat_keys(tmp_path):
+    runtime_file = tmp_path / "runtime.yml"
+    runtime_file.write_text(
+        "\n".join(
+            [
+                "script: python run.py",
+                "backend: slurm",
+                "cpu_workers: 6",
+                "inner_cpu_workers: 4",
+                "configs_per_container: 12",
+                "slurm_memory: 32GB",
+                "slurm_cpus: 32",
+                "slurm_partition: CPU",
+                "slurm_container_image: image:latest",
+                "slurm_container_prefix: test-container",
+                "slurm_job_prefix: test-job",
+                "slurm_mail_user: user@example.com",
+                "slurm_mail_type: ALL",
+                "slurm_wrapper: scripts/wrapper.sh",
+                "workdir: /work/project",
+                "setup:",
+                "  - source .venv/bin/activate",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_runtime_config(str(runtime_file))
+
+    assert config.backend == "slurm"
+    assert config.cpu_workers == 6
+    assert config.inner_cpu_workers == 4
+    assert config.configs_per_container == 12
+    assert config.slurm_memory == "32GB"
+    assert config.slurm_cpus == 32
+    assert config.slurm_container_image == "image:latest"
+    assert config.slurm_container_prefix == "test-container"
+    assert config.slurm_job_prefix == "test-job"
+    assert config.slurm_mail_user == "user@example.com"
+    assert config.slurm_mail_type == "ALL"
+    assert config.slurm_wrapper == "scripts/wrapper.sh"
+    assert config.workdir == "/work/project"
+    assert config.setup == ["source .venv/bin/activate"]
+
+
+def test_slurm_backend_builds_chunk_container_specs(tmp_path):
+    runtime_file = tmp_path / "runtime.yml"
+    runtime_file.write_text(
+        "\n".join(
+            [
+                "script: python run.py",
+                "backend: slurm",
+                "inner_cpu_workers: 2",
+                "configs_per_container: 2",
+                "slurm_memory: 16GB",
+                "slurm_cpus: 8",
+                "slurm_partition: CPU",
+                "slurm_container_image: image:latest",
+                "slurm_container_prefix: c",
+                "slurm_job_prefix: j",
+                "slurm_wrapper: scripts/haml_run_configs.sh",
+                f"workdir: {tmp_path}",
+                "setup:",
+                "  - source .venv/bin/activate",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    config = load_runtime_config(str(runtime_file))
+    specs = [
+        RunSpec(
+            run_id=f"run-{index}",
+            config_path=tmp_path / f"run-{index}.yaml",
+            log_path=tmp_path / "logs" / f"run-{index}.log",
+            script_command=config.script_command,
+            env={},
+            cli_args=[],
+            pass_config=True,
+            session_name=f"run-{index}",
+            heartbeat_path=tmp_path / "heartbeats" / f"run-{index}.json",
+        )
+        for index in range(3)
+    ]
+
+    slurm_specs = build_slurm_run_specs(specs, config, enable_logging=True)
+
+    assert len(slurm_specs) == 2
+    first_command = build_run_command(slurm_specs[0])
+    assert first_command == slurm_specs[0].script_command
+    assert first_command[:2] == ["srun", "--mem"]
+    assert "16GB" in first_command
+    assert "-c" in first_command
+    assert "8" in first_command
+    assert "--container-image=image:latest" in first_command
+    inner_command = first_command[-1]
+    assert "source .venv/bin/activate" in inner_command
+    assert "scripts/haml_run_configs.sh" in inner_command
+    assert "--workers 2" in inner_command
+    assert "--script 'python run.py'" in inner_command
+    assert str(specs[0].config_path) in inner_command
+    assert str(specs[1].config_path) in inner_command
+    assert str(specs[2].config_path) not in inner_command
 
 
 def test_heartbeat_adds_cli_argument(tmp_path):
