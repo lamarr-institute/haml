@@ -21,6 +21,7 @@ from . import haml as haml_module
 from .haml import parse_file
 
 LOG = logging.getLogger(__name__)
+YAML_SUFFIXES = {".yaml", ".yml"}
 
 
 def remove_empty_lines(s: str) -> str:
@@ -230,6 +231,8 @@ class RuntimeConfig:
     slurm_mail_user: Optional[str] = None
     slurm_mail_type: Optional[str] = None
     slurm_wrapper: str = "scripts/haml_run_configs.sh"
+    slurm_gateway_prefix: Optional[str] = None
+    slurm_path_prefix: Optional[str] = None
     workdir: str = "."
     setup: List[str] = field(default_factory=list)
 
@@ -315,6 +318,10 @@ def load_runtime_config(runtime_config_path: str) -> RuntimeConfig:
         slurm_mail_user=str(data["slurm_mail_user"]) if data.get("slurm_mail_user") is not None else None,
         slurm_mail_type=str(data["slurm_mail_type"]) if data.get("slurm_mail_type") is not None else None,
         slurm_wrapper=str(data.get("slurm_wrapper", "scripts/haml_run_configs.sh")),
+        slurm_gateway_prefix=(
+            str(data["slurm_gateway_prefix"]) if data.get("slurm_gateway_prefix") is not None else None
+        ),
+        slurm_path_prefix=str(data["slurm_path_prefix"]) if data.get("slurm_path_prefix") is not None else None,
         workdir=str(data.get("workdir", ".")),
         setup=parse_setup(data.get("setup"), config_path),
     )
@@ -384,6 +391,53 @@ def generate_run_specs(
         generated += 1
 
     return specs, generated, output_dir
+
+
+def existing_config_run_specs(
+    config_dir: str,
+    temp_dir: Optional[str],
+    enable_logging: bool,
+    runtime_config: RuntimeConfig,
+) -> Tuple[List[RunSpec], int, Path]:
+    """Build executable run specs from YAML files that already exist in a directory."""
+    source_dir = Path(config_dir)
+    output_dir = Path(temp_dir) if temp_dir else source_dir
+    log_dir = output_dir / "logs"
+    heartbeat_dir = output_dir / "heartbeats"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if enable_logging:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    if runtime_config.heartbeat:
+        heartbeat_dir.mkdir(parents=True, exist_ok=True)
+
+    config_paths = sorted(
+        path for path in source_dir.iterdir() if path.is_file() and path.suffix.lower() in YAML_SUFFIXES
+    )
+    if not config_paths:
+        raise ValueError(f"{source_dir} contains no .yaml or .yml config files")
+
+    seen_run_ids = set()
+    specs: List[RunSpec] = []
+    for config_path in config_paths:
+        run_id = config_path.stem
+        if run_id in seen_run_ids:
+            raise ValueError(f"{source_dir} contains multiple YAML configs with run id {run_id!r}")
+        seen_run_ids.add(run_id)
+        specs.append(
+            RunSpec(
+                run_id=run_id,
+                config_path=config_path,
+                log_path=(log_dir / f"{run_id}.log") if enable_logging else None,
+                script_command=runtime_config.script_command,
+                env=runtime_config.env,
+                cli_args=runtime_config.cli_args,
+                pass_config=runtime_config.pass_config,
+                session_name=build_session_name(runtime_config.script_command, run_id),
+                heartbeat_path=(heartbeat_dir / f"{run_id}.json") if runtime_config.heartbeat else None,
+            )
+        )
+
+    return specs, len(specs), output_dir
 
 
 def build_run_command(spec: RunSpec) -> List[str]:
@@ -1037,16 +1091,25 @@ def run_file(
     if cuda_devices and cpu_workers is not None:
         raise ValueError("cpu_workers cannot be set together with cuda_devices")
 
-    specs, generated, output_dir = generate_run_specs(
-        haml_file=haml_file,
-        num_samples=num_samples,
-        temp_dir=temp_dir,
-        skip_existing=skip_existing,
-        enable_logging=enable_logging,
-        runtime_config=runtime_config,
-        seed=seed,
-        keep_empty_lines=keep_empty_lines,
-    )
+    source_path = Path(haml_file)
+    if source_path.is_dir():
+        specs, generated, output_dir = existing_config_run_specs(
+            config_dir=haml_file,
+            temp_dir=temp_dir,
+            enable_logging=enable_logging,
+            runtime_config=runtime_config,
+        )
+    else:
+        specs, generated, output_dir = generate_run_specs(
+            haml_file=haml_file,
+            num_samples=num_samples,
+            temp_dir=temp_dir,
+            skip_existing=skip_existing,
+            enable_logging=enable_logging,
+            runtime_config=runtime_config,
+            seed=seed,
+            keep_empty_lines=keep_empty_lines,
+        )
     execute_runs(
         specs,
         cuda_devices or [],

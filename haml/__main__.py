@@ -19,7 +19,7 @@ def remove_empty_lines(s: str):
 def build_generate_parser() -> ArgumentParser:
     """Create the legacy YAML generation CLI parser."""
     parser = ArgumentParser()
-    parser.add_argument("file", help="input HAML file")
+    parser.add_argument("files", nargs="+", help="input HAML file")
     parser.add_argument("-d", "--directory", default=".", help="output directory for generated files")
     parser.add_argument("-a", "--all", action="store_true", help="generate all possible files")
     parser.add_argument("-s", "--sample", type=int, default=0, help="randomly sample files")
@@ -49,30 +49,34 @@ def build_run_parser() -> ArgumentParser:
 
 def run_generate_mode(args) -> None:
     """Handle the legacy generate-only CLI mode."""
-    obj = parse_file(args.file)
-
     import haml.haml as haml_module
 
     haml_module.RANDOM_VALUE_LIMIT = args.rvlimit
 
     rng = np.random.default_rng(args.seed)
-    basename = os.path.basename(args.file).rsplit(".", 1)[0]
-
     os.makedirs(args.directory, exist_ok=True)
+
+    parsed_files = [(haml_file, parse_file(haml_file)) for haml_file in args.files]
+
     if args.all:
-        if input(f"Proceed to create {obj.num_combinations()} files? [y/n] ").lower() != "y":
+        total_combinations = sum(obj.num_combinations() for _, obj in parsed_files)
+        if input(f"Proceed to create {total_combinations} files? [y/n] ").lower() != "y":
             raise SystemExit(0)
-        for i, s in enumerate(obj.all(random_state=rng)):
-            with open(os.path.join(args.directory, f"{basename}_{i}.yml"), "w", encoding="utf-8") as handle:
-                handle.write(s if args.keep_empty_lines else remove_empty_lines(s))
+        for haml_file, obj in parsed_files:
+            basename = os.path.basename(haml_file).rsplit(".", 1)[0]
+            for i, s in enumerate(obj.all(random_state=rng)):
+                with open(os.path.join(args.directory, f"{basename}_{i}.yml"), "w", encoding="utf-8") as handle:
+                    handle.write(s if args.keep_empty_lines else remove_empty_lines(s))
 
     elif args.sample > 0:
-        i = 0
-        for _ in range(args.sample):
-            for content in obj.sample(random_state=rng):
-                with open(os.path.join(args.directory, f"{basename}_{i}.yml"), "w", encoding="utf-8") as handle:
-                    handle.write(content if args.keep_empty_lines else remove_empty_lines(content))
-                i += 1
+        for haml_file, obj in parsed_files:
+            basename = os.path.basename(haml_file).rsplit(".", 1)[0]
+            i = 0
+            for _ in range(args.sample):
+                for content in obj.sample(random_state=rng):
+                    with open(os.path.join(args.directory, f"{basename}_{i}.yml"), "w", encoding="utf-8") as handle:
+                        handle.write(content if args.keep_empty_lines else remove_empty_lines(content))
+                    i += 1
 
 
 def run_executor_mode(args) -> None:

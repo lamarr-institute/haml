@@ -177,6 +177,14 @@ python -m haml run experiments/train-a.hml experiments/train-b.hml \
   --runtime-config experiments/runtime.yml
 ```
 
+If configs were generated earlier, pass the directory containing `.yaml` or
+`.yml` files instead of a HAML file:
+
+```bash
+python -m haml run /tmp/haml-runs/train-a \
+  --runtime-config experiments/runtime.yml
+```
+
 CPU-only parallel example:
 
 ```bash
@@ -188,10 +196,13 @@ The runtime uses these rules:
 - HAML files contain only script configs. Runtime settings live in a separate
   runtime YAML file passed with `--runtime-config`.
 - A single runtime config is shared by all HAML files passed to one `run` command.
+- Runtime inputs can also be directories. Directory inputs are not parsed as HAML;
+  HAML launches every immediate `.yaml` and `.yml` file in sorted order.
 - If sampled configs contain `[[]]` lists, each random sample is combined with
   every exhaustive choice from those lists.
 - The runtime computes `sha256(yaml_content)` and uses the resulting hex digest as the
   run id.
+- For directory inputs, the run id is the config filename without `.yaml` or `.yml`.
 - Every launched script receives `--id <run_id>`.
 - Generated configs are written to `<temp_dir>/<run_id>.yaml`. If `temp_dir` is not
   provided, HAML uses a folder below `tempfile.gettempdir()` such as `/tmp/haml-runs/<stem>`.
