@@ -7,9 +7,8 @@
 HAML is an extension of YAML providing syntax to make parts of the file optional
 or generate values.
 This is particularly useful for generating YAML files defining the hyperparameters
-of ML experiments. The repository also includes a simple runtime executor that can
-expand one `.hml` file into concrete YAML configs and launch each config in its own
-`tmux` session.
+of ML experiments. The repository also includes a small queue executor for running
+config files in parallel through direct processes, tmux, or Slurm.
 
 ## Installation
 
@@ -155,234 +154,115 @@ options:
 
 ### Command Line: Execute YAML Runs
 
-The runtime executor expands one or more `.hml` files into YAML configs, hashes
-each generated YAML file, stores it under a temp directory, and launches one
-`tmux` session per run.
+The runtime does one thing: execute config files through a bounded worker queue.
+Tasks are identified by their config filename stem. All inputs share one queue
+and one output directory.
 
-```
-usage: python -m haml run [-h] -r RUNTIME_CONFIG files [files ...]
-```
+    python -m haml run configs/sleep.yml configs/arousal.yml -r runtime.yml
+    python -m haml run configs/ -r runtime.yml
 
-Example:
+Directory inputs include immediate .yaml and .yml files in sorted order.
+Duplicate filename stems in the same queue are rejected before launching work.
 
-```bash
-python -m haml run experiments/train.hml \
-  --runtime-config experiments/runtime.yml
-```
+The CLI can also expand HAML first and then pass the generated configs to the
+same executor:
 
-Multiple HAML files can share one runtime config:
+    python -m haml run experiments/train.hml -r runtime.yml
 
-```bash
-python -m haml run experiments/train-a.hml experiments/train-b.hml \
-  --runtime-config experiments/runtime.yml
-```
-
-If configs were generated earlier, pass the directory containing `.yaml` or
-`.yml` files instead of a HAML file:
-
-```bash
-python -m haml run /tmp/haml-runs/train-a \
-  --runtime-config experiments/runtime.yml
-```
-
-CPU-only parallel example:
-
-```bash
-python -m haml run experiments/train.hml --runtime-config experiments/runtime-cpu.yml
-```
-
-The runtime uses these rules:
-
-- HAML files contain only script configs. Runtime settings live in a separate
-  runtime YAML file passed with `--runtime-config`.
-- A single runtime config is shared by all HAML files passed to one `run` command.
-- Runtime inputs can also be directories. Directory inputs are not parsed as HAML;
-  HAML launches every immediate `.yaml` and `.yml` file in sorted order.
-- If sampled configs contain `[[]]` lists, each random sample is combined with
-  every exhaustive choice from those lists.
-- The runtime computes `sha256(yaml_content)` and uses the resulting hex digest as the
-  run id.
-- For directory inputs, the run id is the config filename without `.yaml` or `.yml`.
-- Every launched script receives `--id <run_id>`.
-- Generated configs are written to `<temp_dir>/<run_id>.yaml`. If `temp_dir` is not
-  provided, HAML uses a folder below `tempfile.gettempdir()` such as `/tmp/haml-runs/<stem>`.
-  Here, `<stem>` is the HAML filename without directory or extension. For example,
-  `experiments/train-a.hml` uses `/tmp/haml-runs/train-a`.
-- If `temp_dir` is set and multiple HAML files are passed, all generated configs and
-  logs are written below that shared directory.
-- `backend` defaults to `tmux`. Set `backend: direct` to run scripts directly without
-  tmux. Set `backend: slurm` to use gateway tmux sessions that launch Slurm
-  containers, with direct-style parallel execution inside each container.
-- Each tmux-backed run continues to print in the tmux pane and additionally mirrors both
-  stdout and stderr to `<temp_dir>/logs/<run_id>.log`.
-- Direct runs write stdout and stderr to `<temp_dir>/logs/<run_id>.log` when logging is
-  enabled. When logging is disabled, direct run output is discarded.
-- `enable_logging: false` disables per-run log files.
-- If `heartbeat` is enabled, every launched script receives
-  `--heartbeat <temp_dir>/heartbeats/<run_id>.json`. When heartbeat files contain
-  `step` and `total`, the progress bar uses them for partial progress and ETA.
-  Stale heartbeats produce warnings.
-- With both `progress_bar` and `heartbeat` enabled, HAML shows one progress bar per
-  execution slot, one blank spacer line, and then `Total` for completed configs.
-  Each slot line uses `Slot <n> <config> | <status> | <message> | <bar> |
-  <step>/<total> [ETA]`; stalled slots are prefixed with `!`, and slots without a
-  heartbeat show `no heartbeat`. The `Total` postfix includes ETA variance plus
-  minimum and maximum slot ETA.
-- Failed tmux panes remain open for inspection after the command exits.
-- If `skip` is enabled, existing `<run_id>.yaml` files are assumed to have been run
-  successfully already. They are neither rewritten nor relaunched.
-- If multiple CUDA devices are provided, the runtime schedules one active job per device.
-  `cpu_workers` cannot be set together with `cuda_visible_devices`.
-- If CUDA devices are omitted, `cpu_workers` controls how many CPU-only jobs are
-  launched in parallel. If `cpu_workers` is omitted, runs are launched sequentially.
-  In CPU mode, `CUDA_VISIBLE_DEVICES` is left unset.
-- `progress_bar: true` shows one TQDM bar for multi-run execution and suppresses
-  per-run launch/completion log messages.
-
-Runtime config entries:
-
-- `script` is required. It is the command to launch, either as a shell-style string
-  such as `python train.py` or as a list such as `[python, train.py]`.
-- `pass_config` defaults to `true`. When enabled, HAML passes
-  `--config <temp_dir>/<run_id>.yaml --id <run_id>` to the script.
-- `args` is optional and is only used when `pass_config: false`. It can be a mapping
-  like `{lr: 0.001, batch-size: 64, use-ema: true}` or a list like
-  `[--lr, "0.001", --batch-size, "64"]`.
-- `env` is an optional mapping of environment variables for each launched process.
-- `backend` defaults to `tmux`. Supported values are `tmux`, `direct`, and `slurm`.
-- `num_samples` optionally controls how many random HAML samples are generated. If
-  omitted, all combinations are generated.
-- `seed` optionally sets the random seed for HAML sampling.
-- `rvlimit` optionally sets the expansion limit for random variables with infinite
-  support when generating all combinations.
-- `keep_empty_lines` defaults to `false`. Set it to `true` to keep blank lines in
-  generated YAML configs.
-- `temp_dir` optionally sets where generated configs and logs are written.
-- `skip` defaults to `false`. Set it to `true` to skip generated config files that
-  already exist on disk.
-- `enable_logging` defaults to `true`. Set it to `false` to disable per-run log files.
-  `no_log_file: true` is accepted as the inverse spelling.
-- `log_level` defaults to `INFO`. Supported values are `DEBUG`, `INFO`, `WARNING`,
-  and `ERROR`.
-- `progress_bar` defaults to `false`. Set it to `true` to show one TQDM progress bar
-  for multi-run execution instead of per-run scheduling log messages.
-- `heartbeat` defaults to `false`. Set it to `true` to pass a per-run heartbeat file
-  path to the launched script.
-- `heartbeat_timeout` defaults to `300` seconds. When a heartbeat file is older than
-  this, HAML reports a stale-heartbeat warning.
-- `cuda_visible_devices` is an optional list. HAML schedules one active run per
-  listed value and sets `CUDA_VISIBLE_DEVICES` for that run.
-- `cpu_workers` optionally sets the number of CPU-only runs to execute in parallel.
-  It cannot be combined with `cuda_visible_devices`. With `backend: slurm`, this is
-  the number of active Slurm containers / gateway tmux sessions.
-- `inner_cpu_workers` optionally sets the number of direct-style workers inside each
-  Slurm container. It is only used with `backend: slurm`.
-- `configs_per_container` optionally sets how many generated configs are assigned to
-  one Slurm container. If omitted, it defaults to `inner_cpu_workers`.
-- `slurm_memory`, `slurm_cpus`, `slurm_partition`, `slurm_container_image`,
-  `slurm_container_prefix`, `slurm_job_prefix`, `slurm_mail_user`, and
-  `slurm_mail_type` configure the Slurm `srun` command used by `backend: slurm`.
-- `workdir` sets the directory to enter inside the Slurm container before launching
-  the per-config worker.
-- `setup` optionally lists shell commands to run inside the container before launching
-  configs, such as installing dependencies or activating a virtual environment.
-- `slurm_wrapper` optionally sets the helper script used inside the container. It
-  defaults to `scripts/haml_run_configs.sh`.
-
-Example generated YAML:
-
-```yaml
-model: model-a
-epochs: 100
-use_ema: true
-lr: 0.001
-```
+These generated configs are stored in <temp_dir>/configs/ with filenames based
+on SHA-256 of the generated YAML contents. Expansion settings (num_samples,
+seed, rvlimit, keep_empty_lines) belong to this preparation step. The executor
+does not parse HAML or inspect workload YAML contents.
 
 Example runtime YAML:
 
-```yaml
-script: python train.py
-num_samples: 8
-env:
-  WANDB_MODE: offline
-cuda_visible_devices:
-  - 0
-  - 1
-temp_dir: /tmp/haml-train
-skip: true
-progress_bar: true
-heartbeat: true
-heartbeat_timeout: 300
-log_level: INFO
-```
+    script: [python, train.py]
+    backend: direct
+    cpu_workers: 4
+    temp_dir: ./results
+    workdir: .
+    skip: false
+    progress_bar: true
+    enable_logging: true
 
-CPU-only runtime YAML:
+The command receives --config <absolute-config-path> --id <filename-stem>,
+followed by optional args. Set pass_config: false to omit --config.
+args accepts a list of arguments or a mapping of flags to values.
 
-```yaml
-script: python train.py
-num_samples: 8
-cpu_workers: 4
-temp_dir: /tmp/haml-train
-skip: true
-```
+Runtime settings:
 
-Direct runtime YAML:
+- script: required command, as an argument list or shell-style string.
+- backend: direct, tmux (default), or slurm.
+- cpu_workers: maximum parallel workers; defaults to one.
+- cuda_visible_devices: optional GPU slots, one worker per listed device.
+  These replace cpu_workers and cannot be combined with Slurm. HAML sets the
+  standard CUDA_VISIBLE_DEVICES variable for each GPU worker.
+- temp_dir: batch output directory. Defaults to /tmp/haml-runs/<first-input-stem>
+  using the system temporary directory.
+- workdir: worker working directory; defaults to the current directory.
+- skip: skip existing run directories; defaults to false.
+- enable_logging: write combined stdout/stderr to run.log; defaults to true.
+- progress_bar: one tqdm bar counting completed tasks, with failed/skipped
+  counts; defaults to true.
+- env: optional ordinary environment overrides. Workers inherit the caller's
+  environment. HAML supplies config paths and IDs through arguments.
+- pass_config and args: control the worker command described above.
+- slurm_args: raw srun options as a list or shell-style string.
+- log_level: standard Python logging level; defaults to INFO.
 
-```yaml
-script: python train.py
-backend: direct
-num_samples: 8
-cpu_workers: 4
-temp_dir: /tmp/haml-train
-```
+CLI overrides are --backend, --cuda-visible-devices, --temp-dir, --script,
+--skip and --args. Place --args last; everything after it goes to the worker.
 
-Slurm runtime YAML:
+For tmux GPU execution:
 
-```yaml
-script: python run.py
-backend: slurm
-num_samples: 20
-cpu_workers: 6
-inner_cpu_workers: 4
-configs_per_container: 20
-temp_dir: ./haml-train
-enable_logging: true
-progress_bar: true
-heartbeat: true
-heartbeat_timeout: 300
-slurm_memory: 32GB
-slurm_cpus: 32
-slurm_partition: CPU
-slurm_container_image: nvcr.io/ml2r/interactive_ubuntu
-slurm_container_prefix: buschjae-olb
-slurm_job_prefix: buschjae-olb
-slurm_mail_user: sebastian.buschjaeger@tu-dortmund.de
-slurm_mail_type: ALL
-workdir: ~/projects/online-learning-benchmark
-setup:
-  - apt-get -o Dpkg::Options::=--force-not-root install -y openjdk-25-jre
-  - source .venv/olbc/bin/activate
-```
+    script: [python, train.py]
+    backend: tmux
+    cuda_visible_devices: [0, 1]
+    temp_dir: ./results
 
-### Runtime Assumptions
+For Slurm:
 
-- Your script must accept an `--id` CLI argument.
-- Your script is responsible for storing checkpoints, metrics, and any other results locally.
-- The runtime supports `tmux`, `direct`, and `slurm` backends with optional
-  `CUDA_VISIBLE_DEVICES` assignment for GPU selection on non-Slurm backends.
-- Existing config files are treated as completed runs when `skip` is used. There is no
-  separate result verification layer yet.
+    script: [python, train.py]
+    backend: slurm
+    cpu_workers: 4
+    slurm_args: [--partition, GPU, --gres, gpu:1, --cpus-per-task, "8"]
+    temp_dir: ./results
 
-Optional heartbeat integration for Python scripts:
+Each Slurm task is one srun invocation. Slurm handles resource allocation;
+HAML limits concurrent invocations. Container flags can be supplied in
+slurm_args. Setup and application-specific behavior belong in the launched
+command. There is no container batching or inner worker scheduler.
 
-```python
-from haml import Heartbeat
+Bookkeeping lives in <temp_dir>/runs/<id>/:
 
-with Heartbeat(args.heartbeat) as heartbeat:
-    for epoch in range(num_epochs):
-        train_one_epoch()
-        heartbeat.update(step=epoch + 1, total=num_epochs, message=f"epoch {epoch + 1}/{num_epochs}")
-```
+- run.log: combined worker output, when logging is enabled.
+- exitcode: the reported integer exit code.
+- pid, device, backend: minimal information for watching an existing worker.
+
+Run directories are created when launching tasks. Generated config existence
+does not count as an existing run.
+
+With skip enabled, the queue first checks for matching running tasks and reserves
+their worker/GPU slots. It watches those tasks until completion and starts queued
+work as slots become free. Other existing run directories are skipped, including
+failed or incomplete runs. No config/command comparison is performed.
+Restart the queue on the same host or Slurm submission node; retain enough
+workers and the GPUs used by running tasks.
+
+Without skip, HAML overwrites its log and exit information in existing run
+directories. An already-running task is a conflict rather than a second launch.
+The executed program decides how to handle its own artifacts.
+
+Failed tasks release their slots and the queue continues. The runtime exits
+nonzero after the queue finishes if any watched or newly launched task failed.
+A worker that disappears without reporting completion is a failure.
+
+Tmux workers remain detached and their panes stay available for inspection.
+Interrupting a queue leaves tmux workers alive and stops pending launches.
+Direct and srun worker process groups are stopped on interruption.
+Run the scheduler itself in tmux to keep pending work progressing after a
+terminal disconnect. Manual recovery uses skip; there is no automatic restart
+service, fingerprinting, or heartbeat progress protocol.
 
 ### Python Module
 
